@@ -1,0 +1,15 @@
+[project]
+name = "youth-finance-backend"
+version = "0.1.0"
+description = "Minimal API and LangGraph scaffold for youth financial counseling"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "python-dotenv>=1,<2",
+    "langgraph>=1,<2",
+    "neo4j>=5.28,<7",
+]
+
+[tool.uv]
+package = false

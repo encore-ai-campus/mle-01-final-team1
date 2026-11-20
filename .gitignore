@@ -1,0 +1,29 @@
+# Python 생성 파일
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Node 및 프런트엔드 생성 파일
+**/node_modules/
+**/dist/
+**/.vite/
+**/.vercel/
+
+# 환경 변수 및 비밀정보 (예시 파일은 보존)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# 로컬 및 편집기 설정
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 사용자 데이터와 로그
+**/*.log
