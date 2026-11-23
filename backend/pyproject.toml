@@ -1,3 +1,4 @@
+# 백엔드의 패키지 의존성을 관리한다.
 [project]
 name = "youth-finance-backend"
 version = "0.1.0"
@@ -9,6 +10,7 @@ dependencies = [
     "python-dotenv>=1,<2",
     "langgraph>=1,<2",
     "neo4j>=5.28,<7",
+    "langfuse>=4.9,<6",
 ]
 
 [tool.uv]
