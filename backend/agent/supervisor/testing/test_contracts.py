@@ -166,6 +166,97 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(SupervisorContractError, "다른 시나리오"):
             validate_plan(shared, scenario)
 
+    def test_scenario_id_autofill_and_preservation(self):
+        args = self._scenario_inputs()
+        args["scenarios"][0].pop("id")
+        args["scenarios"][1]["id"] = "s_01"  # 뒤쪽 명시 ID부터 예약해야 한다.
+        args["scenarios"][2]["id"] = None
+        original = deepcopy(args)
+        prepared = prepare_scenarios(args)["scenario_state"]
+        self.assertEqual([b["id"] for b in prepared["scenarios"]], ["s_02", "s_01", "s_03"])
+        self.assertEqual(args, original)
+        self.assertEqual(prepare_scenarios(prepared)["scenario_state"], prepared)
+        prepared["scenarios"][0]["assumptions"]["holding_actions"][0]["target_criteria"]["monthly_contribution_krw"] = 1
+        self.assertEqual(args, original)
+
+    def test_duplicate_or_malformed_explicit_id_rejected(self):
+        for value in ("s_b", " s_a", 1, [], {}):
+            args = self._scenario_inputs()
+            args["scenarios"][0]["id"] = value
+            with self.subTest(value=value), self.assertRaises(SupervisorContractError):
+                prepare_scenarios(args)
+        args = self._scenario_inputs()
+        args["scenarios"][0]["assumptions"]["holding_actions"][0]["action"] = []
+        with self.assertRaises(SupervisorContractError):
+            prepare_scenarios(args)
+
+    def test_independent_paths_default_and_generated_ids_used(self):
+        # 실제 로그에서 발생한 ID 누락을 재현한다. 도구가 반환한 ID로 바로 계획을 제출한다.
+        args = self._scenario_inputs()
+        args["scenarios"] = args["scenarios"][:2]
+        for branch in args["scenarios"]:
+            branch.pop("id")
+            branch["assumptions"]["horizon_months"] = 60
+            branch["assumptions"]["holding_actions"][0]["target_criteria"].pop("term_months")
+        intent = {"purpose": "5년 뒤 납입 전략 비교", "operation": "compare", "analysis_mode": "strategy_compare", "supplied_values": {}, "profile_update_status": "not_needed"}
+        seen = []
+        trace = []
+        def decide(context):
+            seen.append(deepcopy(context))
+            if len(seen) == 1:
+                return {"kind": "call_tool", "reason": "분기 준비", "tool_name": "prepare_scenarios", "tool_input": args}
+            branches = context["observations"][-1]["result"]["scenario_state"]["scenarios"]
+            tasks = []
+            for branch in branches:
+                sid = branch["id"]
+                tasks.extend([
+                    {"task_id": f"product_{sid}", "agent": "product", "scenario_id": sid, "objective": "해당 분기의 적금 후보 조회", "depends_on": []},
+                    {"task_id": f"fund_{sid}", "agent": "fund", "scenario_id": sid, "objective": "해당 분기 원금 및 확인된 조건으로 60개월 전망", "depends_on": [f"product_{sid}"]},
+                ])
+            return {"kind": "submit_plan", "reason": "분기별 독립 배정", "intent": intent, "execution_plan": {"tasks": tasks}}
+        source = {"messages": [{"type": "human", "content": "30만원 적금과 40만원 적금의 5년 뒤 금액 비교"}], "turn_id": "t1", "consultation_id": "c1", "intent": None, "scenario_state": None}
+        outcome = Supervisor(decide=decide, trace_sink=trace.append).run(source, use_graph=False)
+        self.assertEqual(outcome.next_node, "plan_validator")
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(outcome.tool_calls, 1)
+        scenario = outcome.update["scenario_state"]
+        plan = outcome.update["execution_plan"]
+        self.assertEqual(execution_waves(plan, scenario), [["product_s_01", "product_s_02"], ["fund_s_01", "fund_s_02"]])
+        self.assertEqual(scenario_plan_view(plan, scenario)["common_task_ids"], [])
+        self.assertIsNone(source["scenario_state"])
+        self.assertNotIn("scenario_execution", outcome.update)
+        self.assertTrue(all("term_months" not in b["assumptions"]["holding_actions"][0]["target_criteria"] for b in scenario["scenarios"]))
+        tool_events = [e for e in trace if e["node"] == "tools"]
+        self.assertEqual(len(tool_events), 1)
+        self.assertNotEqual(tool_events[0]["output"]["observation"]["result"].get("status"), "failed")
+
+    def test_common_work_must_have_multiple_branch_consumers(self):
+        scenario = prepare_scenarios(self._scenario_inputs())["scenario_state"]
+        plan = normalize_plan(self._branch_plan(), None, True)
+        # 공통 조회를 한 분기만 쓰는 경우와 아예 쓰지 않는 경우는 모두 반려한다.
+        for kept in ({"s_a"}, set()):
+            invalid = deepcopy(plan)
+            for task in invalid["tasks"]:
+                if task.get("scenario_id") not in kept:
+                    task["depends_on"] = [d for d in task["depends_on"] if d != "common"]
+            with self.subTest(kept=kept), self.assertRaisesRegex(SupervisorContractError, "두 개 이상의 분기"):
+                validate_plan(invalid, scenario)
+        # 조회 자체가 여러 분기에서 간접적으로 사용되면 허용한다.
+        valid = deepcopy(plan)
+        valid["tasks"].append({"task_id": "terms", "agent": "product", "scenario_id": None, "objective": "특정 계약 원문 조회", "depends_on": [], "status": "pending", "run_id": None})
+        valid["tasks"][0]["depends_on"] = ["terms"]
+        validate_plan(valid, scenario)
+
+    def test_fund_calculation_cannot_be_shared(self):
+        scenario = prepare_scenarios(self._scenario_inputs())["scenario_state"]
+        plan = normalize_plan(self._branch_plan(), None, True)
+        plan["tasks"][0]["agent"] = "fund"
+        with self.assertRaisesRegex(SupervisorContractError, "Fund 계산"):
+            validate_plan(plan, scenario)
+        # 시나리오가 없는 일반 Fund 단독 계획은 그대로 허용한다.
+        single = normalize_plan({"tasks": [{"task_id": "fund", "agent": "fund", "objective": "현재 재무 계산"}]}, None, False)
+        validate_plan(single, None)
+
     def test_invalid_subscription_assumption(self):
         for field, value in (("monthly_contribution_krw", -1), ("monthly_contribution_krw", True), ("term_months", 0), ("annual_rate_pct", float("inf"))):
             args = self._scenario_inputs()

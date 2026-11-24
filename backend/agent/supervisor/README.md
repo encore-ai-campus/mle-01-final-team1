@@ -1,10 +1,10 @@
-# Supervisor v13 — 시나리오별 DAG 및 실제 LLM 실행
+# Supervisor v14 — 독립 분기 우선 및 계획 안정화
 
-기준: Supervisor v12, State/Profile State v3.4, GitHub main `36974c86a781ec2ea87b94856fafc686ca44d6f3` (Memory MVP, PR #4).
+기준: GitHub main `79535f40ea1b12bd0aed3a612168ecb8fcdbb231` (PR #5, Supervisor v1 추가 / 기존 v13), State/Profile State v3.4.
 
 ## 1. 적용 및 실행
 
-ZIP의 파일은 모두 `backend/agent/supervisor/` 아래에만 있다. 기존 Supervisor 폴더를 프로젝트 밖에 백업한 뒤 **폴더 전체를 교체**한다. 단순 덮어쓰기는 구버전의 사용하지 않는 파일이 남을 수 있다. `agent/state.py`, `agent/shared/`, `agent/profile/`, `agent/memory/`, 다른 Agent, 환경 설정 및 공용 테스트는 수정하지 않는다.
+이번 ZIP은 기존 main의 변경 파일만 담은 패치다. 프로젝트 루트에 압축을 풀고 동일 경로의 파일만 덮어쓴다. Supervisor 폴더를 삭제하지 않는다. 변경 범위는 `backend/agent/supervisor/` 및 기존 `docs/Supervisor_Developer_Guide.md` 설명 문서에 한정한다. `agent/state.py`, `agent/shared/`, `agent/profile/`, `agent/memory/`, 다른 Agent, 환경 설정 및 공용 테스트는 수정하지 않는다.
 
 기존 `backend/.env` 또는 PowerShell 환경변수에 실제 API 키와 접근 권한이 있는 모델을 설정한다. 다음 값은 형식 예시이며 실제 값으로 대체한다. 키를 코드나 GitHub에 저장하지 않는다.
 
@@ -89,14 +89,16 @@ flowchart TD
 
 ## 4. 시나리오별 실행 계획
 
-재무 행동 또는 경제적 가정이 달라 독립 결과가 필요한 비교는 2~3개의 시나리오로 분리한다. 하나의 가상 조건도 한 분기로 표현할 수 있다. 단순 후보 비교/개념 설명은 분기하지 않는다. 각 시나리오에 필요한 전체 DAG를 최초에 배정한다. 같은 순서·Agent를 각 분기에 재사용하는 것도 허용한다. 작업 ID는 다르게 지정한다. 공통 조회는 분기에 영향을 받지 않는 경우에만 `scenario_id=null`로 공유한다. 모든 분기에 최소 한 개의 독립 작업이 있어야 하며, 교차 분기 의존과 공통 작업의 분기 결과 의존을 금지한다. 분기별 계산은 Fund 등 전문 Agent가 자기 분기만 수행하며, 상위 비교 준비 및 Final Advice가 결과를 종합한다.
+재무 행동 또는 경제적 가정이 달라 독립 결과가 필요한 비교는 2~3개의 시나리오로 분리한다. 하나의 가상 조건도 한 분기로 표현할 수 있다. 단순 후보 비교/개념 설명은 분기하지 않는다. 각 시나리오에 필요한 전체 DAG를 최초에 배정한다. 같은 순서·Agent를 각 분기에 재사용하는 것도 허용한다. 작업 ID는 다르게 지정한다. 상품 탐색·추천 및 정책 자격 판단도 독립 분기를 기본으로 한다. 공통 조회는 동일 특정 계약/상품 조건처럼 분기에 영향을 받지 않는 사실 조회를 두 개 이상 분기가 직접 또는 간접적으로 사용하는 경우에만 `scenario_id=null`로 공유한다. 분기가 존재하면 공통 Fund 작업은 금지한다. 조회 조건의 의미적 동일성은 프롬프트와 실제 결과 검증으로 확인한다. 모든 분기에 최소 한 개의 독립 작업이 있어야 하며, 교차 분기 의존과 공통 작업의 분기 결과 의존을 금지한다. 분기별 계산은 Fund 등 전문 Agent가 자기 분기만 수행하며, 상위 비교 준비 및 Final Advice가 결과를 종합한다.
 
 `submit_plan`의 `intent`에는 `purpose`, `operation`, `supplied_values`, `profile_update_status`가 필수이다. `compare`에는 `analysis_mode`도 필요하다. 경제적 행동/가정 비교(`strategy_compare`)와 복수 재무 로드맵 비교(`compare`+`roadmap`)는 독립 시나리오 2~3개를 요구한다. 단순 동일조건 상품 비교는 `candidate_compare`로 비분기 계획이 가능하다. 이 규칙은 기존 MainState 필드를 활용하며 새 최상위 필드를 만들지 않는다.
 
-예: 월 30만 원 vs 40만 원의 36개월 적금 비교. `prepare_scenarios`에서 `s_300`/`s_400`과 `assumptions.horizon_months=36`, 가상 `holding_actions=[{"action":"subscribe","target_criteria":{"monthly_contribution_krw":300000,"term_months":36},"status":"hypothetical"}]`를 준비한다(두 번째 분기는 400000). 금리를 확인하지 않았다면 금리를 만들지 않는다. 현재 상품 조건을 조사해야 하면 `product_common`(null) → `fund_300`(s_300), `fund_400`(s_400)을 한 계획에 넣는다. 단순 원금/이미 제시된 금리 계산이면 Product를 생략할 수 있다. 두 분기의 Fund 작업은 자기 납입 전략만 계산한다. 상위 Dispatcher가 해당 분기 `holding_actions`를 `profile_view`에 합성하고 기존 `target_criteria`의 납입액을 읽도록 연동해야 한다.
+예: 월 30만 원 vs 40만 원의 5년 후 자금 비교. `prepare_scenarios`에서 각 분기의 `assumptions.horizon_months=60`, 가상 `holding_actions=[{"action":"subscribe","target_criteria":{"monthly_contribution_krw":300000},"status":"hypothetical"}]`를 준비한다(두 번째 분기는 400000). ID를 생략하거나 null/빈 문자열로 주면 Python이 명시 ID와 충돌하지 않는 `s_01`, `s_02` 등의 ID를 부여한다. 명시 중복·잘못된 ID 및 미확인 실제 계약 참조는 반려하고, 후속 계획은 반환된 ID를 사용한다. 평가 기간과 상품 계약 만기(`term_months`)는 구분한다. 금리를 확인하지 않았다면 만들지 않는다. 현재 상품 탐색이 필요하면 `product_300 → fund_300`과 `product_400 → fund_400`을 각 분기에 독립 배정한다. 동일 특정 상품의 약관/금리를 조회하는 경우만 예외적으로 공유할 수 있다. 단순 원금/사용자가 제시한 금리 계산이면 Product를 생략할 수 있다.
+
+각 분기는 같은 평가 기준으로 계산하되, 다른 상품을 선택하는 전략 비교에서는 적용 상품과 금리의 차이를 밝힌다. 상품을 찾지 못한 정상 조회 결과는 확인된 범위의 원금 계산을 막지 않으며, 금리 의존 총액은 미확정으로 표시한다. 실제 필수 선행 작업 실패는 Dispatcher/Collector의 재계획 대상으로 처리해야 한다. 상위 Dispatcher는 같은 Agent라도 task별로 별도 실행 ID 및 Local State를 사용하고, 해당 분기 `holding_actions`만 `profile_view`에 합성한다. 시나리오 간 비교는 Final Advice의 책임이다.
 
 ```powershell
-uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금으로 3년 들면 차이가 커?" --output result.json --state-output next_state.json
+uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금은 5년 뒤 총 금액이 얼마나 차이 나?" --output result.json --state-output next_state.json
 ```
 
 위 명령은 실제 API를 호출한다. 코드가 강제하는 것은 intent·분기 coverage·DAG 의존성 등 구조적 계약이고, 자연어 업무 목적의 의미적 정확성은 실제 모델 평가가 필요하다. `scenario_execution`은 계획을 보여주는 진단 정보이며 운영 Dispatcher는 `execution_plan.tasks[]`를 소비한다.
@@ -146,6 +148,6 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 제작 환경에는 실제 API 키와 LangGraph가 없어 운영 모델 호출과 실제 그래프 실행을 검증하지 않았다. 로컬 오프라인 검사 결과와 미실행 항목을 아래에 기록한다.
 
-- 오프라인 계약 검사 14개 중 11개 통과.
+- 오프라인 계약 검사 19개 중 16개 통과. 기존 검사 유지, ID 자동 생성·보존, 중복/잘못된 ID 거부, 독립 분기 경로, 공통 작업 사용 범위 및 공통 Fund 금지 검사 추가.
 - 실제 Profile/Memory MVP 연동 2개 및 부모 LangGraph Command 이동 1개: 제작 환경에 해당 모듈이 없어 미실행.
 - 실제 OpenAI API 호출 및 실제 전문 Agent 실행: 미검증. 기본 실행은 실제 API만 사용한다.

@@ -1,9 +1,11 @@
-# Supervisor v13 개발 및 연동 가이드
+# Supervisor v14 개발 및 연동 가이드
 
 > **작성일:** 2026-11-24 · **대상:** 청년 금융 멀티에이전트 서비스 개발자  
-> **기준 코드:** `Supervisor_v13_Scenario_DAG_OnlyFolder.zip`  
-> **변경 요약:** v12 실제 API 실행 및 Memory 연동 유지 + 시나리오별 전체 DAG, 공통 작업 공유, intent 필수 검증, 시나리오별 진단 출력.  
+> **기준 코드:** GitHub main `79535f40ea1b12bd0aed3a612168ecb8fcdbb231` (PR #5, 기존 v13) + `Supervisor_v14_Independent_Branches_patch.zip`  
+> **변경 요약:** v13의 실제 API·Profile/Memory 연동 및 DAG 계약 유지 + 독립 분기 우선, 공통 조회 예외 검증, 시나리오 ID 자동 부여, 비교 기준/미확인 조건 처리 지침.  
 > **설계 기준:** State / Profile State v3.4, [Memory MVP 병합 커밋 `36974c8`](https://github.com/encore-ai-campus/mle-01-final-team1/commit/36974c86a781ec2ea87b94856fafc686ca44d6f3)
+
+**적용:** v14는 변경분 ZIP이다. PR #5 기준 기존 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
 
 ## 1. 목적과 책임 범위
 
@@ -158,7 +160,7 @@ Reason은 전체 사용자 프로필이나 전체 MainState를 그대로 전달�
 | 가상 금융 행동 | `scenario_state.scenarios[].assumptions.holding_actions` | 납입액·가상 가입 등. 실제 거래 또는 저장 명령 아님 |
 | 명시적 저장 요청 | `basic_profile_changes`, `financial_profile_changes` | `needs_confirmation` 변경 후보만 생성, 실제 저장 서비스는 별도 |
 
-`scenario_state`는 경제적 가정 또는 금융 행동에 따라 독립 분석이 필요할 때 사용한다(단일 가정 1개, 비교 2~3개). 단순 상품 후보 비교·개념 설명·여러 목표 존재만으로 분기를 만들지 않는다. v13에서는 계획 제출 시 `intent.purpose`, `operation`, `supplied_values`, `profile_update_status`를 필수화하며 비교 요청에는 `analysis_mode`를 명시한다. `strategy_compare` 또는 `compare`+`roadmap`으로 분류한 계획은 2~3개 분기를 요구한다. 이는 기존 공용 필드를 활용한 Supervisor의 실행 정책이다. 실제 계약 유지·해지 비교의 `holding_ref`는 인증된 동일 기준 스냅샷에서 검증되어야 하며 `product_ref`와 혼용하지 않는다.
+`scenario_state`는 경제적 가정 또는 금융 행동에 따라 독립 분석이 필요할 때 사용한다(단일 가정 1개, 비교 2~3개). 단순 상품 후보 비교·개념 설명·여러 목표 존재만으로 분기를 만들지 않는다. 계획 제출 시 `intent.purpose`, `operation`, `supplied_values`, `profile_update_status`를 필수화하며 비교 요청에는 `analysis_mode`를 명시한다. `strategy_compare` 또는 `compare`+`roadmap`으로 분류한 계획은 2~3개 분기를 요구한다. 이는 기존 공용 필드를 활용한 Supervisor의 실행 정책이다. 실제 계약 유지·해지 비교의 `holding_ref`는 인증된 동일 기준 스냅샷에서 검증되어야 하며 `product_ref`와 혼용하지 않는다.
 
 ### 4.4 최종 반환
 
@@ -190,7 +192,7 @@ LLM은 고정된 전문 Agent 중 필요한 작업을 선택하여 한 번의 `s
 | `agent` | `policy`, `product`, `fund` 중 하나 | LLM |
 | `objective` | 개별 업무 지시: 목적, 범위, 제약, 요구 결과, 선행 결과 활용 | LLM |
 | `depends_on` | 실제 필요한 직접 선행 작업 ID 목록 | LLM, DAG 검증 |
-| `scenario_id` | 분기 ID. 비분기 요청 또는 분기 무관 공통 작업만 `null` | LLM, 시나리오 검증 |
+| `scenario_id` | 분기 ID. 비분기 요청 또는 두 개 이상 분기가 사용하는 분기 무관 사실 조회만 `null` | LLM, 시나리오 검증 |
 | `status`, `run_id` | 실행 상태와 실행 식별자 | 코드 및 상위 실행 계층 |
 
 Supervisor는 전문 Agent의 내부 검색 쿼리나 계산 도구까지 결정하지 않는다. 전문 Agent가 자기 업무를 다시 정하지 않아도 되도록 구체적인 목적과 전달받을 결과의 활용 방법을 `objective`에 적는다.
@@ -267,18 +269,18 @@ flowchart LR
 }
 ```
 
-### 5.3 시나리오별 독립 실행 계획 (v13 핵심)
+### 5.3 시나리오별 독립 실행 계획 (v14 핵심)
 
 각 시나리오는 자체 작업 DAG를 가진다. 실제 LangGraph 노드는 고정하며 별도의 `execution_plan`을 분기마다 복제하지 않는다. 하나의 `execution_plan.tasks[]`에서 `scenario_id`로 분기 소속을 표현한다. 동일 Agent·동일 목적·동일 연결 순서라도 서로 다른 시나리오는 서로 다른 `task_id`를 사용한다. 전체 작업 수 한도는 공통 작업과 모든 분기를 합쳐 12개이다.
 
 ```mermaid
 flowchart TD
-    S[Supervisor: 모든 분기와 전체 DAG 확정] --> C[공통 Product: 기준 조건 조회]
+    S[Supervisor: 모든 분기와 전체 DAG 확정] --> PA[Product: s_a]
+    S --> PB[Product: s_b]
     S --> P[Policy: s_policy]
-    C --> A[Fund: s_a]
-    C --> B[Fund: s_b]
-    C --> PR[Product: s_policy]
-    P --> PR
+    PA --> A[Fund: s_a]
+    PB --> B[Fund: s_b]
+    P --> PR[Product: s_policy]
     P --> F[Fund: s_policy]
     PR --> F
     A --> V[Evidence / Reflection: 분기별 검증]
@@ -288,14 +290,17 @@ flowchart TD
     K --> Z[Final Advice: 전체 시나리오 비교]
 ```
 
-- s_a, s_b는 같은 경로를 사용한다. s_policy는 정책/상품 조건을 추가로 조회하는 다른 경로를 사용한다. 위 그래프는 설계 예시이며 실제 답변에 강제하는 고정 경로가 아니다.
-- `scenario_id=null`은 분기에 무관한 실제 조건 조사나 공통 기준 분석에 한정한다. 공통 작업에 분기별 가상 조건을 적용하지 않는다.
-- 분기 작업은 같은 분기와 공통 작업의 결과만 의존한다. 공통 작업이 분기 결과를 참조하는 계획, A 분기에서 B 분기의 결과를 참조하는 계획은 거부한다. 모든 선언된 분기에 최소 하나의 독립 전문 작업을 요구한다. 동일 Agent·목적이라도 분기가 다르면 중복 업무가 아니다.
-- 각 분기의 `objective`는 그 분기의 조건·직접 선행 결과·요구 출력만 명시한다. 재무 수치 비교에는 각 분기의 Fund 분석을 배정한다. 전문 Agent의 목표는 자기 분기 계산 및 근거 제시이고, 시나리오 간 최종 비교는 상위 노드가 수행한다. 검증 코드는 구조적 격리를 강제하지만 자연어 목적이 실제 사용자 의미와 정확히 일치하는지는 모델 평가가 필요하다.
+- s_a, s_b는 동일한 노드 순서의 독립 경로이며, s_policy는 다른 경로다. 각 분기는 다른 `task_id`, `scenario_id`, 실행 시 별도 `run_id` 및 Local State를 사용한다. 위 그래프는 설계 예시이지 고정 실행 경로가 아니다.
+- **독립 분기가 기본이다.** Product의 상품 탐색·추천과 Policy의 자격·혜택 판단은 분기마다 독립 배정한다. Fund 계산은 반드시 분기별 작업에 소속시킨다. 여러 분기의 조건을 한 전문 Agent에 주어 조사·분류하지 않는다.
+- **공통화는 예외다.** 동일 특정 상품 약관·금리 또는 동일 실제 계약 사실처럼 입력과 조회 범위가 동일하고 결과가 그대로 재사용 가능한 Product/Policy 사실 조회만 `scenario_id=null`로 공유한다. 코드에서는 해당 작업을 두 개 이상의 서로 다른 분기가 직접 또는 간접적으로 사용하는지 검증하며, 공통 Fund와 불필요한 단일 분기 공통 작업은 반려한다. 비분기 요청의 `null`은 정상이다. 조회 의미의 동일성은 프롬프트 및 결과 검증의 책임이며 구조 검사만으로 증명할 수 없다.
+- 각 분기 작업은 같은 분기와 공통 작업 결과만 의존한다. 공통 작업은 공통 작업에만 의존한다. 교차 분기 의존과 분기 작업 누락은 거부한다. 같은 Agent·목적이어도 분기가 다르면 중복 업무가 아니다.
+- 각 `objective`는 자신의 조건·직접 선행 결과·요구 출력만 지시한다. 재무 비교는 동일한 평가 기간·기준일·금리 전제·세금·납입 시점을 고려한다. 동일 상품에서 납입액만 바꾸는 통제 비교와 각 전략에 맞는 다른 상품을 선택하는 비교를 구분한다. 실제 상품/조건이 다르면 최종 비교에서 그 차이를 밝힌다. 전문 Agent는 자기 분기 결과를 반환하고 시나리오 간 비교는 상위 Final Advice에서 처리한다.
+- 단순 원금 또는 이미 확인된 금리 계산에는 Product를 강제하지 않는다. 상품 미발견은 정상 조회 결과로 표현하고 Fund는 원금 등 계산 가능한 값을 반환하며 미확인 금리 의존 총액은 미확정 처리한다. 기술적 실패로 필수 선행 결과를 얻지 못했다면 상위 Collector/Dispatcher에서 재계획한다. 현재 패치는 이 운영 노드들을 구현하지 않는다.
+- 중복 DB 조회 캐싱은 향후 조회 계층에서 최적화할 수 있다. Agent를 한 번에 합쳐 여러 분기를 판단하도록 만들지는 않는다.
 
-**반환 계약 예시 — 30만 원 vs 40만 원 적금, 36개월**
+**반환 계약 예시 — 30만 원 vs 40만 원 적금, 5년 후 인출**
 
-다음 JSON은 예시이며 고정된 실행 답안이 아니다. 현재 금리 확인이 필요한 경우 공통 Product를 한 번 배정한다. 사용자에게 필요한 것은 원금 차이 또는 이미 제시된 동일 금리의 계산뿐이라면 공통 Product 없이 Fund 두 작업만 실행할 수 있다. 기간과 납입 전략은 실제 소득·지출과 구분한다.
+다음 JSON은 예시이며 고정된 실행 답안이 아니다. 현재 상품 탐색이 필요하다고 판단한 경우, 납입 조건별 Product와 Fund를 독립 배정한다. 사용자가 원금 차이만 묻거나 동일 금리 조건을 이미 제공했다면 Fund 두 작업만으로 충분하다. 5년 후 인출은 평가 기간 60개월이지 60개월 만기 계약을 반드시 의미하지 않는다. 명시하지 않은 계약 만기나 재가입 금리는 임의 확정하지 않는다.
 
 ```json
 {
@@ -314,9 +319,15 @@ flowchart TD
         "label": "월 30만 원 납입",
         "overrides": {},
         "assumptions": {
-          "horizon_months": 36,
+          "horizon_months": 60,
           "holding_actions": [
-            {"action": "subscribe", "target_criteria": {"monthly_contribution_krw": 300000, "term_months": 36}, "status": "hypothetical"}
+            {
+              "action": "subscribe",
+              "target_criteria": {
+                "monthly_contribution_krw": 300000
+              },
+              "status": "hypothetical"
+            }
           ]
         }
       },
@@ -325,9 +336,15 @@ flowchart TD
         "label": "월 40만 원 납입",
         "overrides": {},
         "assumptions": {
-          "horizon_months": 36,
+          "horizon_months": 60,
           "holding_actions": [
-            {"action": "subscribe", "target_criteria": {"monthly_contribution_krw": 400000, "term_months": 36}, "status": "hypothetical"}
+            {
+              "action": "subscribe",
+              "target_criteria": {
+                "monthly_contribution_krw": 400000
+              },
+              "status": "hypothetical"
+            }
           ]
         }
       }
@@ -337,9 +354,46 @@ flowchart TD
     "revision": 1,
     "review_retry_count": 0,
     "tasks": [
-      {"task_id": "product_common", "agent": "product", "scenario_id": null, "objective": "두 납입 전략에 동일하게 적용 가능한 36개월 적금의 금리·한도·조건과 근거를 확인하라. 확인되지 않은 금리는 명시하라.", "depends_on": [], "status": "pending", "run_id": null},
-      {"task_id": "fund_300", "agent": "fund", "scenario_id": "s_300", "objective": "월 30만 원 36개월 납입의 원금 및 확인된 공통 조건에 따른 이자·만기 수령액을 산출하라. 세금·금리 전제와 계산 한계를 표시하라.", "depends_on": ["product_common"], "status": "pending", "run_id": null},
-      {"task_id": "fund_400", "agent": "fund", "scenario_id": "s_400", "objective": "월 40만 원 36개월 납입의 원금 및 확인된 공통 조건에 따른 이자·만기 수령액을 산출하라. 세금·금리 전제와 계산 한계를 표시하라.", "depends_on": ["product_common"], "status": "pending", "run_id": null}
+      {
+        "task_id": "product_300",
+        "agent": "product",
+        "scenario_id": "s_300",
+        "objective": "월 30만 원 납입 조건의 적금 후보와 금리·한도·만기·가입 조건을 조사하라. 5년 평가 시 재가입 조건이 미확정이면 구분하고 근거를 반환하라. 미발견도 결과로 반환하라.",
+        "depends_on": [],
+        "status": "pending",
+        "run_id": null
+      },
+      {
+        "task_id": "fund_300",
+        "agent": "fund",
+        "scenario_id": "s_300",
+        "objective": "월 30만 원씩 60개월 납입하는 해당 전략의 원금과 확인된 조건에 따른 세전·세후 전망을 계산하라. 미확인 금리 의존 수치는 미확정으로 표시하고 다른 분기와 비교하지 마라.",
+        "depends_on": [
+          "product_300"
+        ],
+        "status": "pending",
+        "run_id": null
+      },
+      {
+        "task_id": "product_400",
+        "agent": "product",
+        "scenario_id": "s_400",
+        "objective": "월 40만 원 납입 조건의 적금 후보와 금리·한도·만기·가입 조건을 조사하라. 5년 평가 시 재가입 조건이 미확정이면 구분하고 근거를 반환하라. 미발견도 결과로 반환하라.",
+        "depends_on": [],
+        "status": "pending",
+        "run_id": null
+      },
+      {
+        "task_id": "fund_400",
+        "agent": "fund",
+        "scenario_id": "s_400",
+        "objective": "월 40만 원씩 60개월 납입하는 해당 전략의 원금과 확인된 조건에 따른 세전·세후 전망을 계산하라. 미확인 금리 의존 수치는 미확정으로 표시하고 다른 분기와 비교하지 마라.",
+        "depends_on": [
+          "product_400"
+        ],
+        "status": "pending",
+        "run_id": null
+      }
     ]
   }
 }
@@ -349,17 +403,17 @@ flowchart TD
 
 ### 5.4 상위 Dispatcher / Collector 연동 지침
 
-다음 내용은 현재 Supervisor의 반환 계약을 소비하기 위한 상위 그래프 구현 지침이며, v13 ZIP이 실제 Dispatcher나 Collector를 구현한다는 의미가 아니다.
+다음 내용은 현재 Supervisor의 반환 계약을 소비하기 위한 상위 그래프 구현 지침이며, 이번 패치가 실제 Dispatcher나 Collector를 구현한다는 의미가 아니다.
 
-1. `plan_validator`에서 현재 계획, 분기 소속, 필수 입력을 확인한다. `depends_on`이 충족된 대기 작업만 Dispatcher가 실행한다. 실행 대상 분기 ID가 없으면 공통/비분기 작업의 기본 View만 구성한다.
-2. Dispatcher는 `task_id`, `run_id`(실행 시 발급), `plan_revision`, `scenario_id`, `objective`, 원래 `user_query`, 필요한 `profile_view`, 직접 선행 작업의 `upstream_results`를 전달한다. 실제 프로필 → `intent.supplied_values` → 해당 분기 `overrides`의 순서로 병합 후 필요한 항목만 투영한다. 해당 분기의 `assumptions.holding_actions`는 `profile_view.holding_actions`에, 평가 기간 등 필요한 가정은 업무 지시에 맞게 전달한다. 다른 분기의 가정이나 전체 시나리오 목록을 전문 Agent의 계산 입력으로 주지 않는다.
+1. `plan_validator`에서 현재 계획, 분기 소속, 필수 입력을 확인한다. `depends_on`이 충족된 대기 작업만 Dispatcher가 실행한다. 실행 대상 분기 ID가 없으면 공통/비분기 작업의 기본 View만 구성한다. 공통 작업을 여러 분기의 통합 검색으로 해석하지 않는다.
+2. Dispatcher는 `task_id`, `run_id`(실행 시 발급), `plan_revision`, `scenario_id`, `objective`, 원래 `user_query`, 필요한 `profile_view`, 직접 선행 작업의 `upstream_results`를 전달한다. 실제 프로필 → `intent.supplied_values` → 해당 분기 `overrides`의 순서로 병합 후 필요한 항목만 투영한다. 해당 분기의 `assumptions.holding_actions`는 `profile_view.holding_actions`에, 평가 기간 등 필요한 가정은 업무 지시에 맞게 전달한다. 다른 분기의 가정이나 전체 시나리오 목록을 전문 Agent의 계산 입력으로 주지 않는다. 같은 Agent라도 작업별 `Send` 또는 독립 호출로 별도 Local State를 구성한다. 원래 `user_query`는 문맥 참고용이며 실제 실행 범위는 `objective`와 자기 분기의 View가 우선한다.
 3. Collector가 실제 전문 결과와 작업 상태를 갱신한다. 선행 결과가 완료되면 남은 작업을 자동 실행한다. 아직 완료되지 않은 결과나 다른 분기의 결과를 전달하지 않는다.
 4. 모든 필수 작업이 끝나면 Evidence / Reflection에서 해당 분기·현재 run의 결과를 검증한다. 실제 실패, 필수정보 부족, 조건 변경 또는 검증 반려로 기존 계획이 실행 불가능한 경우에만 Supervisor에 재계획을 요청한다.
 5. 상위 비교 준비/Final Advice가 검증된 분기별 결과를 모은다. 동일 기간·단위·기준일·실제/가정·세전/세후를 확인하고 수치 차이는 코드에서 계산한 뒤 최종 LLM은 결과의 의미와 장단점을 설명한다. 분기 누락/실패를 정상 비교 결과로 표시하지 않는다. 이 단계는 Supervisor의 구현 범위가 아니다.
 
 직접 선행 결과만 전달한다는 원칙을 사용한다. 예를 들어 `A → B → C`에서 C가 A의 결과를 직접 필요로 한다면 C의 `depends_on`에 A와 B를 모두 지정해야 한다. `execution_waves`는 DAG를 시각적으로 확인하기 위한 정적 단계이며 실제 Dispatcher가 반드시 단계별 장벽을 두어야 한다는 의미가 아니다.
 
-현재 구현은 필수 intent, 전략 비교의 분기 수, 모든 선언 분기의 독립 작업 존재, 순환 의존성, 잘못된 ID, 분기 교차 의존 및 공통 작업의 분기 결과 의존, 동일 목적·분기·의존 조건의 중복 작업을 검사한다. 반려 사유는 Reason에 전달하고 기존 복구 한도를 적용한다. 동일 계획과 입력이 유지되고 검토 반려가 없으면 기존 작업 상태와 `run_id`를 보존한다. 계획 또는 입력 일부가 바뀌면 작업 전체가 초기화될 수 있으므로 변경된 작업만 재실행하는 최적화는 후속 개선 범위이다.
+현재 구현은 필수 intent, 전략 비교의 분기 수, 모든 선언 분기의 독립 작업 존재, 순환 의존성, 잘못된 ID, 분기 교차 의존 및 공통 작업의 분기 결과 의존, 동일 목적·분기·의존 조건의 중복 작업, 공통 Fund 금지 및 공통 조회의 2개 이상 분기 사용 여부를 검사한다. 반려 사유는 Reason에 전달하고 기존 복구 한도를 적용한다. 동일 계획과 입력이 유지되고 검토 반려가 없으면 기존 작업 상태와 `run_id`를 보존한다. 계획 또는 입력 일부가 바뀌면 작업 전체가 초기화될 수 있으므로 변경된 작업만 재실행하는 최적화는 후속 개선 범위이다.
 
 ## 6. Profile / Memory / Scenario 도구
 
@@ -402,13 +456,13 @@ flowchart TD
 
 ### 6.3 Scenario Tool
 
-`prepare_scenarios`는 Supervisor 내부에서 분기 ID, `overrides`, 가정과 분석 기간, 가상 가입 `target_criteria`의 납입액/기간/금리, 필요한 계약 참조를 검사한다. 실제 프로필을 복제 저장하거나 금융 계산을 실행하지 않는다. 예를 들어 소득 320만 원 유지와 250만 원 감소를 비교하는 요청은 두 분기로 나누고 각각 Fund 작업을 배정할 수 있다. 현재의 실제 소득은 그대로 보존한다.
+`prepare_scenarios`는 누락/null/빈 문자열 ID에 대해 `s_01`, `s_02`처럼 충돌 없는 ID를 자동 생성한다. 명시 ID를 먼저 예약하고 유효한 명시 ID는 그대로 보존한다. 중복 또는 잘못된 형식의 명시 ID, 미확인 실제 계약 참조는 자동 수정하지 않고 반려한다. 이후에는 도구가 반환한 실제 분기 ID를 계획에서 참조한다. 이 도구는 Supervisor 내부에서 분기 ID, `overrides`, 가정과 분석 기간, 가상 가입 `target_criteria`의 납입액/기간/금리, 필요한 계약 참조를 검사한다. 실제 프로필을 복제 저장하거나 금융 계산을 실행하지 않는다. 예를 들어 소득 320만 원 유지와 250만 원 감소를 비교하는 요청은 두 분기로 나누고 각각 Fund 작업을 배정할 수 있다. 현재의 실제 소득은 그대로 보존한다.
 
 ## 7. 실제 LLM 실행 및 확인 방법
 
 ### 7.1 환경 설정 및 실행
 
-v13의 기본 실행은 실제 OpenAI Responses API를 호출한다. `backend/.env` 또는 기존 PowerShell 환경변수에 다음 항목을 설정한다. 값은 실제 API 키와 접근 가능한 모델 ID로 대체한다. Shell 환경변수가 `.env`보다 우선한다.
+기본 실행은 실제 OpenAI Responses API를 호출한다. `backend/.env` 또는 기존 PowerShell 환경변수에 다음 항목을 설정한다. 값은 실제 API 키와 접근 가능한 모델 ID로 대체한다. Shell 환경변수가 `.env`보다 우선한다.
 
 ```dotenv
 OPENAI_API_KEY=your_api_key
@@ -417,7 +471,7 @@ OPENAI_MODEL=your_model_id
 
 사용 모델은 Responses API의 함수 호출을 지원해야 한다. 기존 프로젝트의 Python 환경, LangGraph, langchain-core, Pydantic v2, python-dotenv를 사용한다. 별도 OpenAI SDK 또는 langchain-openai 설치는 필수가 아니다. 키를 코드·GitHub·실행 로그에 포함하지 않는다.
 
-ZIP 적용 시 기존 Supervisor 폴더를 프로젝트 외부에 백업하고 해당 폴더 전체를 교체한다. 삭제된 이전 Mock 파일이 남지 않도록 단순 덮어쓰기를 피한다. 다른 Agent나 공용 State 파일은 교체하지 않는다.
+이번 변경분 ZIP 적용 시 기존 Supervisor 폴더를 프로젝트 외부에 백업하고 프로젝트 루트에서 압축을 해제하여 포함된 파일만 덮어쓴다. 기존 폴더 전체를 교체하거나 삭제하지 않는다. 다른 Agent나 공용 State 파일은 교체하지 않는다.
 
 프로젝트 루트에서 직접 실행:
 
@@ -452,10 +506,10 @@ uv run python agent/supervisor/supervisor_main.py --state-file input.json --ques
 
 로컬 CLI는 인증된 Context Loader를 대체하지 않는다. 기본 실행 시 Memory MVP가 존재하면 빈 인메모리 인스턴스를 생성하며, `--memory-file`로 직접 제공한 기록만 적재할 수 있다. 해당 기록은 프로세스 종료 후 지속되지 않는다. 프로필 DB 읽기 Port도 CLI 기본 연결에는 없다. 사용자의 실제 정보는 신뢰된 입력 State 또는 서버 조회 서비스로 전달해야 한다.
 
-같은 질문으로 v12/v13의 경로를 비교하려면 다음처럼 실제 API를 실행한다. `scenario_execution`과 `intent`, `execution_plan.tasks[].scenario_id`를 확인한다.
+같은 질문으로 v13/v14의 경로를 비교하려면 다음처럼 실제 API를 실행한다. `scenario_execution`과 `intent`, `execution_plan.tasks[].scenario_id`를 확인한다.
 
 ```powershell
-uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금으로 3년 들면 차이가 커?" --output result.json --state-output next_state.json
+uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금은 5년 뒤 총 금액이 얼마나 차이 나?" --output result.json --state-output next_state.json
 ```
 
 ### 7.2 API 호출과 반환 검증
@@ -526,7 +580,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 `--regression`은 실제 모델의 판단 정답을 재생하는 테스트가 아니다. HTTP 전송 경계, DAG, 내부 State 격리, Memory 계약·권한·재사용과 실제 팀 MVP 연결을 검사한다. 기존 `--case`, `--all`, `--simulate-dispatch` 방식의 고정 테스트는 v12에서 제거되었다.
 
-이 버전의 오프라인 계약 검사는 14개이다. 기존 HTTP 및 Memory 계약 검사 외에 필수 intent, 동일/상이한 분기 DAG와 공통 작업, 미배정 분기 및 교차 의존 거부, 가상 납입 조건 검증, 반려 후 재제출 및 내부 State 격리, 선택적 부모 LangGraph `Command` 이동을 검사한다. 단위 검사용 제어된 결정과 HTTP 응답은 실제 기본 실행에 사용하지 않는다. 제작 환경에서 실제 API 키 없이 모델의 판단 정확도는 검증할 수 없다. 팀원 모듈·LangGraph 설치 여부에 따라 선택 검사 결과가 달라진다. 최종 제작 검증 결과는 ZIP의 README에 기록했다.
+이 버전의 오프라인 계약 검사는 19개이다. 추가 검사에서는 누락 ID 자동 생성/명시 ID 보존, 중복·잘못된 ID 반려, 누락 ID 요청 후 불필요한 재호출 없는 독립 Product/Fund 계획, 공통 조회 사용 범위, 공통 Fund 금지를 확인한다. 기존 HTTP 및 Memory 계약 검사 외에 필수 intent, 동일/상이한 분기 DAG와 공통 작업, 미배정 분기 및 교차 의존 거부, 가상 납입 조건 검증, 반려 후 재제출 및 내부 State 격리, 선택적 부모 LangGraph `Command` 이동을 검사한다. 단위 검사용 제어된 결정과 HTTP 응답은 실제 기본 실행에 사용하지 않는다. 제작 환경에서 실제 API 키 없이 모델의 판단 정확도는 검증할 수 없다. 팀원 모듈·LangGraph 설치 여부에 따라 선택 검사 결과가 달라진다. 최종 제작 검증 결과는 ZIP의 README에 기록했다.
 
 실제 모델 평가에는 `--question`, 필요시 `--state-file`을 사용한다. 결과를 아래 기준으로 검토한다.
 
@@ -535,8 +589,8 @@ uv run python agent/supervisor/supervisor_main.py --regression
 | 단순 금융상품 조회 | 필요한 Agent만 배정, 불필요한 시나리오 없음 |
 | 복합 재무 계획 | 초기 제출에 후속 작업까지 포함, 개별 objective와 직접 의존성 일치 |
 | 가상 소득 변경 | 원본 프로필 유지, 분기별 가정 분리 |
-| 30만 원 vs 40만 원 적금 | 두 분기·독립 Fund, 필요한 경우만 공통 Product, `analysis_mode=strategy_compare`, Final 비교 |
-| 정책 활용 vs 일반 저축 | 분기마다 다른 전체 DAG 가능, 같은 경로도 허용, 공통 조회 재사용 |
+| 30만 원 vs 40만 원 적금 | 두 분기·독립 Product/Fund(상품 탐색이 필요한 경우), 동일 사실 조회만 예외적 공유, `analysis_mode=strategy_compare`, Final 비교 |
+| 정책 활용 vs 일반 저축 | 분기마다 다른 전체 DAG 가능, 같은 경로도 허용, 독립 분기 우선 |
 | 잘못된 분기 의존/미배정 | 반환 전 반려, 복구 한도 내 재제출 |
 | 필수 값 부족 | 무단 추정 대신 적절한 조회 또는 최소 추가 질문 |
 | 명시적 저장 요청 | 승인 대기 후보 생성, 저장 완료 상태를 임의 선언하지 않음 |
@@ -545,10 +599,10 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 ### 9.3 현재 범위 및 후속 과제
 
-| 항목 | v13 기준 상태 |
+| 항목 | v14 기준 상태 |
 |---|---|
 | Supervisor 내부 LangGraph, API 호출 코드 및 전체 DAG 반환 | 구현 |
-| 시나리오별 독립 DAG, 공통 작업 및 필수 intent 검증 | 구현 (실제 모델 판단 검증 필요) |
+| 시나리오별 독립 DAG, 공통 작업 예외 및 필수 intent 검증 | 구현 (실제 모델 판단 검증 필요) |
 | 분기별 결과 정렬·차이 계산·최종 비교 | 상위 비교 준비/Final Advice 범위, 미구현 |
 | 실제 Profile / Memory MVP 연결 인터페이스 | 구현, 팀원 모듈 설치·서비스 연결 필요 |
 | 영속 Profile / Memory DB, 승인 저장, 실제 계약 스냅샷 | 별도 서비스 연동 필요 |

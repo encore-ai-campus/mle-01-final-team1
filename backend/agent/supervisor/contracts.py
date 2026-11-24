@@ -181,7 +181,7 @@ def validate_plan(plan: Any, scenario: dict[str, Any] | None) -> None:
     scenario_ids = {s["id"] for s in (scenario or {}).get("scenarios", [])}
     tasks_by_id: dict[str, dict[str, Any]] = {}
     for task in tasks:
-        if not isinstance(task, dict) or task.get("agent") not in ALLOWED_AGENTS:
+        if not isinstance(task, dict) or not isinstance(task.get("agent"), str) or task["agent"] not in ALLOWED_AGENTS:
             raise SupervisorContractError("전문 작업은 policy/product/fund만 허용합니다.")
         task_id = task.get("task_id")
         if not isinstance(task_id, str) or not task_id.strip() or task_id != task_id.strip() or task_id in ids:
@@ -190,7 +190,7 @@ def validate_plan(plan: Any, scenario: dict[str, Any] | None) -> None:
         tasks_by_id[task_id] = task
         if not isinstance(task.get("objective"), str) or not task["objective"].strip():
             raise SupervisorContractError("작업 objective가 없습니다.")
-        if task.get("scenario_id") is not None and task["scenario_id"] not in scenario_ids:
+        if task.get("scenario_id") is not None and (not isinstance(task["scenario_id"], str) or task["scenario_id"] not in scenario_ids):
             raise SupervisorContractError("존재하지 않는 scenario_id를 참조합니다.")
         if not isinstance(task.get("depends_on"), list):
             raise SupervisorContractError("depends_on은 list이어야 합니다.")
@@ -229,6 +229,35 @@ def validate_plan(plan: Any, scenario: dict[str, Any] | None) -> None:
 
     for task_id in ids:
         dfs(task_id)
+
+    # 독립 분기 우선: 공통 작업은 실제 두 개 이상 분기가 필요로 하는 사실 조회에 한정한다.
+    # 자연어 objective의 의미적 동일성은 LLM/Evidence가 확인하며, 여기서는 구조만 강제한다.
+    if scenario_ids:
+        common_ids = {tid for tid, task in tasks_by_id.items() if task.get("scenario_id") is None}
+        common_consumers: dict[str, set[str]] = {tid: set() for tid in common_ids}
+        for task_id, task in tasks_by_id.items():
+            sid = task.get("scenario_id")
+            if sid is None:
+                if task["agent"] == "fund":
+                    raise SupervisorContractError("시나리오가 있으면 Fund 계산은 각 scenario_id에 배정하세요. 공통 작업은 분기 무관 사실 조회만 허용합니다.")
+                continue
+            # 직접 또는 간접적으로 이 분기에 필요한 공통 조회를 기록한다.
+            stack = list(edges[task_id])
+            seen_deps: set[str] = set()
+            while stack:
+                dep = stack.pop()
+                if dep in seen_deps:
+                    continue
+                seen_deps.add(dep)
+                if dep in common_consumers:
+                    common_consumers[dep].add(sid)
+                stack.extend(edges[dep])
+        for task_id in sorted(common_ids):
+            if len(common_consumers[task_id]) < 2:
+                raise SupervisorContractError(
+                    f"공통 작업 {task_id}는 두 개 이상의 분기에서 사용되어야 합니다. "
+                    "한 분기의 조회는 해당 scenario_id에 배정하고, 불필요한 작업은 제거하세요."
+                )
 
     # 같은 작업을 ID만 바꿔 중복 발행하는 경우를 차단한다. 동일 Agent의 다른 업무는 허용.
     signatures = set()
