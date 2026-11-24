@@ -17,12 +17,12 @@ class TaskDraftSchema(BaseModel):
     agent: Literal["policy", "product", "fund"]
     objective: str = Field(min_length=1, description="Self-contained Korean work order: purpose, scope, required output, relevant constraints and use of predecessor results")
     depends_on: list[str] = Field(default_factory=list, description="IDs of ALL mandatory predecessor tasks; empty for independent tasks")
-    scenario_id: str | None = Field(default=None, description="Own prepared scenario ID for every branch-dependent task; null ONLY for truly shared work or a non-scenario request")
+    scenario_id: str | None = Field(default=None, description="Own prepared scenario ID for every branch-dependent task; null ONLY for a non-scenario request or invariant product/policy fact lookup actually needed by at least two branches; never a shared Fund calculation")
 
 
 class PlanDraftSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tasks: list[TaskDraftSchema] = Field(min_length=1, max_length=12, description="Complete DAG for the entire request: every scenario has its own tasks and path; common dependencies may be reused; no cross-scenario comparison tasks")
+    tasks: list[TaskDraftSchema] = Field(min_length=1, max_length=12, description="Complete DAG for the entire request: each scenario has its own full independent path by default; share only identical invariant factual product/policy lookups required by at least two branches; no cross-scenario comparison tasks")
 
 
 class IntentDraftSchema(BaseModel):
@@ -42,7 +42,7 @@ class DecisionSchema(BaseModel):
     kind: Literal["call_tool", "submit_plan", "ask_user", "compose"]
     reason: str
     tool_name: str | None = None
-    tool_input: dict[str, Any] | None = None
+    tool_input: dict[str, Any] | None = Field(default=None, description="For prepare_scenarios: scenarios list with unique optional id, label, overrides, assumptions. Missing IDs are assigned by Python; use the exact returned IDs in subsequent task plans. Never invent baseline_ref or holding_ref.")
     intent: IntentDraftSchema | None = Field(default=None, description="MANDATORY for submit_plan: purpose, operation, supplied_values, profile_update_status; analysis_mode for compare")
     execution_plan: PlanDraftSchema | None = None
     pending_input: list[dict[str, Any]] | None = None
