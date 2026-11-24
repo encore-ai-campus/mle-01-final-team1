@@ -157,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
             "status": "executed", "execution_mode": "langgraph_supervisor_only",
             "decider": "actual_openai_api", "model": decider.model,
             "llm_calls": decider.calls, "llm_usage": decider.usage,
+            "llm_input_sizes": decider.input_sizes,
+            "llm_usage_totals": {k: sum(u[k] for u in decider.usage)
+                                 for k in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens", "reasoning_tokens")
+                                 if len(decider.usage) == decider.calls and decider.usage and all(k in u for u in decider.usage)},
             "services": {"profile": "actual_mvp" if ports.profile_agent else "unconnected",
                          "profile_db_read": "connected" if ports.get_profile_fields else "unconnected", "memory": "actual_local_in_memory_mvp" if service is not None else "unconnected",
                          "memory_imported_records": loaded, "memory_persistent": False},

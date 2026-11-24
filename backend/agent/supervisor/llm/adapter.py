@@ -11,29 +11,41 @@ from .prompts import SYSTEM_PROMPT
 
 
 class TaskDraftSchema(BaseModel):
-    """고정 전문 Agent에 배정할 한 작업의 명령과 선행 의존성."""
     model_config = ConfigDict(extra="forbid")
-    task_id: str = Field(description="Unique task ID; reuse on unchanged replan")
+    task_id: str = Field(description="고유 작업 ID")
     agent: Literal["policy", "product", "fund"]
-    objective: str = Field(min_length=1, description="Self-contained Korean work order: purpose, scope, required output, relevant constraints and use of predecessor results")
-    depends_on: list[str] = Field(default_factory=list, description="IDs of ALL mandatory predecessor tasks; empty for independent tasks")
-    scenario_id: str | None = Field(default=None, description="Own prepared scenario ID for every branch-dependent task; null ONLY for a non-scenario request or invariant product/policy fact lookup actually needed by at least two branches; never a shared Fund calculation")
+    objective: str = Field(min_length=1, description="한국어 1~2문장: 이번 작업 목적·필요 결과·고유 제약")
+    depends_on: list[str] = Field(default_factory=list, description="직접 선행 task_id")
+    scenario_id: str | None = Field(default=None, description="해당 분기 ID; 비분기 또는 공통 조회는 null")
 
 
 class PlanDraftSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tasks: list[TaskDraftSchema] = Field(min_length=1, max_length=12, description="Complete DAG for the entire request: each scenario has its own full independent path by default; share only identical invariant factual product/policy lookups required by at least two branches; no cross-scenario comparison tasks")
+    tasks: list[TaskDraftSchema] = Field(min_length=1, max_length=12, description="전체 작업 DAG")
+
+
+class ScenarioBranchSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, description="작업이 참조할 고유 분기 ID")
+    label: str = Field(min_length=1)
+    overrides: dict[str, Any] = Field(default_factory=dict, description="임시 프로필 값")
+    assumptions: dict[str, Any] = Field(default_factory=dict, description="horizon_months, holding_actions 등 가정")
+
+
+class ScenarioDraftSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenarios: list[ScenarioBranchSchema] = Field(min_length=1, max_length=3)
+    baseline_ref: str | None = Field(default=None, description="검증된 계약 스냅샷 참조")
 
 
 class IntentDraftSchema(BaseModel):
-    """공용 intent의 허용 필드. submit_plan은 코드에서 필수 필드를 재검증한다."""
     model_config = ConfigDict(extra="forbid")
-    purpose: str | None = Field(default=None, description="Required for submit_plan: user's actual goal, not an agent name")
+    purpose: str | None = Field(default=None, description="사용자 목적")
     operation: Literal["new", "continue", "revise", "compare", "explain"] | None = None
-    analysis_mode: Literal["candidate_compare", "strategy_compare", "roadmap"] | None = Field(default=None, description="Required for compare plans: candidate_compare for same-condition product candidates; strategy_compare for alternative financial actions/assumptions needing separate scenario DAGs")
+    analysis_mode: Literal["candidate_compare", "strategy_compare", "roadmap"] | None = None
     strategy_preference: Any = None
-    supplied_values: dict[str, Any] | None = Field(default=None, description="Required for submit_plan: only actual one-turn user values, {} if none; never scenario-specific assumptions")
-    profile_update_status: Literal["not_needed", "pending", "waiting", "done"] | None = Field(default=None, description="Required for submit_plan: actual profile persistence status only; never invent done")
+    supplied_values: dict[str, Any] | None = Field(default=None, description="이번 실제 제공값")
+    profile_update_status: Literal["not_needed", "pending", "waiting", "done"] | None = None
     target_advice_ref: str | None = None
 
 
@@ -41,10 +53,11 @@ class DecisionSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["call_tool", "submit_plan", "ask_user", "compose"]
     reason: str
-    tool_name: str | None = None
-    tool_input: dict[str, Any] | None = Field(default=None, description="For prepare_scenarios: scenarios list with unique optional id, label, overrides, assumptions. Missing IDs are assigned by Python; use the exact returned IDs in subsequent task plans. Never invent baseline_ref or holding_ref.")
-    intent: IntentDraftSchema | None = Field(default=None, description="MANDATORY for submit_plan: purpose, operation, supplied_values, profile_update_status; analysis_mode for compare")
+    tool_name: Literal["profile_agent", "retrieve_memory", "prepare_scenarios"] | None = None
+    tool_input: dict[str, Any] | None = None
+    intent: IntentDraftSchema | None = None
     execution_plan: PlanDraftSchema | None = None
+    scenario_state: ScenarioDraftSchema | None = Field(default=None, description="submit_plan과 함께 제출할 분기 초안")
     pending_input: list[dict[str, Any]] | None = None
     goal_mode: Literal["merge", "replace"] | None = None
 
@@ -62,7 +75,7 @@ class StructuredLLMDecider:
 
         result = self._chain.invoke([
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(context, ensure_ascii=False, default=str)),
+            HumanMessage(content=json.dumps(context, ensure_ascii=False, default=str, separators=(",", ":"))),
         ])
         if hasattr(result, "model_dump"):
             data = result.model_dump(exclude_none=True)

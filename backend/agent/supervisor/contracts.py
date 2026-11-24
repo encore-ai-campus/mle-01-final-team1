@@ -57,6 +57,7 @@ class Decision(TypedDict):
     tool_input: NotRequired[dict[str, Any]]
     intent: NotRequired[dict[str, Any]]
     execution_plan: NotRequired[PlanDraft]
+    scenario_state: NotRequired[dict[str, Any]]  # submit_plan과 함께 제출할 내부 분기 초안
     pending_input: NotRequired[list[dict[str, Any]]]
     goal_mode: NotRequired[Literal["merge", "replace"]]
 
@@ -113,7 +114,7 @@ def validate_intent_scenarios(intent: dict[str, Any], scenario: dict[str, Any] |
     comparative = mode == "strategy_compare" or (mode == "roadmap" and intent["operation"] == "compare")
     if comparative and len((scenario or {}).get("scenarios", [])) < 2:
         raise SupervisorContractError(
-            "전략/재무 로드맵 비교는 prepare_scenarios로 2~3개 독립 시나리오를 먼저 준비하고 각각의 작업 DAG를 배정하세요."
+            "전략/재무 로드맵 비교는 2~3개 독립 시나리오와 각각의 작업 DAG가 필요합니다. submit_plan에 scenario_state를 함께 제출하거나 준비된 분기를 참조하세요."
         )
 
 
@@ -134,6 +135,8 @@ def validate_decision(data: dict[str, Any]) -> None:
         raise SupervisorContractError("Invalid goal_mode")
     if "intent" in data and not isinstance(data["intent"], dict):
         raise SupervisorContractError("intent는 dict이어야 합니다.")
+    if "scenario_state" in data and (kind != "submit_plan" or not isinstance(data["scenario_state"], dict)):
+        raise SupervisorContractError("scenario_state 초안은 submit_plan의 dict로만 제출하세요.")
     if kind == "submit_plan":
         validate_plan_intent(data.get("intent"))
 

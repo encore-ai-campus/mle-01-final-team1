@@ -28,6 +28,7 @@ class OpenAIDecider:
         self.timeout = timeout
         self.calls = 0
         self.usage: list[dict[str, Any]] = []
+        self.input_sizes: list[dict[str, int]] = []
 
     @classmethod
     def from_env(cls) -> "OpenAIDecider":
@@ -38,19 +39,25 @@ class OpenAIDecider:
         return cls(os.getenv("OPENAI_API_KEY", ""), os.getenv("OPENAI_MODEL", ""))
 
     def __call__(self, context: dict[str, Any]) -> dict[str, Any]:
+        # Compact JSON removes incidental whitespace. Byte counts are diagnostics, not tokens.
+        context_json = json.dumps(context, ensure_ascii=False, default=str, separators=(",", ":"))
+        schema = DecisionSchema.model_json_schema()
+        self.input_sizes.append({"prompt_bytes": len(SYSTEM_PROMPT.encode("utf-8")),
+                                 "context_bytes": len(context_json.encode("utf-8")),
+                                 "schema_bytes": len(json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))})
         payload = {
             "model": self.model,
             "instructions": SYSTEM_PROMPT,
-            "input": json.dumps(context, ensure_ascii=False, default=str),
+            "input": context_json,
             "tools": [{"type": "function", "name": "supervisor_decision",
                        "description": "Return one structured Supervisor decision, not financial advice.",
-                       "parameters": DecisionSchema.model_json_schema(), "strict": False}],
+                       "parameters": schema, "strict": False}],
             "tool_choice": {"type": "function", "name": "supervisor_decision"},
             "parallel_tool_calls": False,
             "store": False,
         }
         request = Request("https://api.openai.com/v1/responses",
-                          data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                          data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
                           headers={"Authorization": f"Bearer {self._api_key}",
                                    "Content-Type": "application/json"}, method="POST")
         self.calls += 1
@@ -68,8 +75,15 @@ class OpenAIDecider:
         if not isinstance(raw, dict) or raw.get("status") != "completed":
             raise OpenAIConnectionError("OpenAI 응답이 정상 완료되지 않았습니다.")
         if isinstance(raw.get("usage"), dict):
-            self.usage.append({k: raw["usage"][k] for k in ("input_tokens", "output_tokens", "total_tokens")
-                               if isinstance(raw["usage"].get(k), int)})
+            usage = raw["usage"]
+            item = {k: usage[k] for k in ("input_tokens", "output_tokens", "total_tokens")
+                    if type(usage.get(k)) is int}
+            for group, field, label in (("input_tokens_details", "cached_tokens", "cached_input_tokens"),
+                                         ("output_tokens_details", "reasoning_tokens", "reasoning_tokens")):
+                details = usage.get(group)
+                if isinstance(details, dict) and type(details.get(field)) is int:
+                    item[label] = details[field]
+            self.usage.append(item)
         calls = [item for item in raw.get("output", []) if isinstance(item, dict)
                  and item.get("type") == "function_call" and item.get("name") == "supervisor_decision"]
         if len(calls) != 1:
