@@ -11,6 +11,7 @@ dependencies = [
     "langgraph>=1,<2",
     "neo4j>=5.28,<7",
     "langfuse>=4.9,<6",
+    "psycopg[binary]>=3.3.9",
 ]
 
 [tool.uv]
