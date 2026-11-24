@@ -1,0 +1,93 @@
+entity_name,property_name,standard_field,source_dataset,processed_file,data_type,field_role,notes
+FinancialProduct,product_id,product_id,savings|deposit|loan,*_products.json,string,identifier,상품과 금리옵션 연결 키
+FinancialProduct,product_name,product_name,savings|deposit|loan,*_products.json,string,property,상품명
+FinancialProduct,product_type,product_type,savings|deposit|loan,*_products.json,string,relation_key,데이터셋 기준 savings·deposit·loan으로 생성
+FinancialProduct,institution_id,institution_id,savings|deposit|loan,*_products.json,string,relation_key,Institution 연결 키
+FinancialProduct,institution_name,institution_name,savings|deposit|loan,*_products.json,string,property,금융기관명
+FinancialProduct,product_code,product_code,savings|deposit|loan,*_products.json,string,property,기관별 상품 코드
+FinancialProduct,disclosure_month,disclosure_month,savings|deposit|loan,*_products.json,string,property,공시월
+FinancialProduct,disclosure_start_date,disclosure_start_date,savings|deposit|loan,*_products.json,date_or_null,property,공시 시작일
+FinancialProduct,disclosure_end_date,disclosure_end_date,savings|deposit|loan,*_products.json,date_or_null,property,공시 종료일
+FinancialProduct,disclosure_end_status,disclosure_end_status,savings|deposit|loan,*_products.json,string,property,공시 종료일의 결측 의미 상태
+FinancialProduct,max_limit,max_limit,savings|deposit,*_products.json,numeric_or_null,property,최대 가입한도
+FinancialProduct,min_subscription_amount_krw,min_subscription_amount_krw,savings|deposit,*_products.json,integer_or_null,property,기타 유의사항에서 파싱한 최소 가입금액
+FinancialProduct,join_method,join_method,savings|deposit|loan,*_products.json,string_or_array,property,가입방법
+FinancialProduct,eligible_member,eligible_member,savings|deposit|loan,*_products.json,string,property,가입대상
+FinancialProduct,join_restriction_code,join_restriction_code,savings|deposit,*_products.json,string,property,가입 제한 코드
+FinancialProduct,special_condition,special_condition,savings|deposit,*_products.json,string,property,우대조건 원문
+FinancialProduct,additional_note,additional_note,savings|deposit|loan,*_products.json,string,property,추가 조건 원문
+FinancialProduct,maturity_interest_note,maturity_interest_note,savings|deposit,*_products.json,string,property,만기 이자 관련 원문
+FinancialProduct,loan_limit_raw,loan_limit_raw,loan,*_products.json,string,property,대출한도 원문
+FinancialProduct,early_repayment_fee,early_repayment_fee,loan,*_products.json,string,property,중도상환수수료 원문
+FinancialProduct,repayment_type,repayment_type,loan,*_products.json,string,property,상환방식
+RateOption,rate_option_id,rate_option_id,savings|deposit|loan,*_rates.json,string,identifier,금리옵션 식별자는 후속 생성·확정 필요
+RateOption,product_id,product_id,savings|deposit|loan,*_rates.json,string,relation_key,FinancialProduct 연결 키
+RateOption,term_months,term_months,savings|deposit,*_rates.json,integer,property,가입기간 개월
+RateOption,base_rate,base_rate,savings|deposit,*_rates.json,numeric,property,공시 기본금리
+RateOption,max_rate,max_rate,savings|deposit,*_rates.json,numeric,property,공시 최고금리
+RateOption,min_rate,min_rate,loan,loan_rates.json,numeric,property,공시 최저금리
+RateOption,average_rate,average_rate,loan,loan_rates.json,numeric_or_null,property,직전월 신규 취급 평균금리
+RateOption,rate_basis,rate_basis,savings|deposit|loan,*_rates.json,object,property,금리별 산정 기준
+RateOption,rate_type_code,rate_type_code,savings|deposit|loan,*_rates.json,string,property,금리 유형 코드
+RateOption,rate_type,rate_type,savings|deposit|loan,*_rates.json,string,property,고정·변동·단리·복리 등 유형
+RateOption,saving_type_code,saving_type_code,savings,*_rates.json,string,property,정액·자유적립 코드
+RateOption,saving_type,saving_type,savings,*_rates.json,string,property,적립 유형
+RateOption,repayment_type,repayment_type,loan,loan_rates.json,string,property,상환방식별 금리옵션
+YouthPolicy,policy_id,policy_id,youth_policy,youth_policy.json,string,identifier,정책 고유 ID
+YouthPolicy,policy_name,policy_name,youth_policy,youth_policy.json,string,property,정책명
+YouthPolicy,policy_description,policy_description,youth_policy,youth_policy.json,string,property,정책 설명
+YouthPolicy,large_category,large_category,youth_policy,youth_policy.json,string,property,정책 대분류
+YouthPolicy,middle_category,middle_category,youth_policy,youth_policy.json,string,property,정책 중분류
+YouthPolicy,support_content,support_content,youth_policy,youth_policy.json,string,property,지원 내용
+YouthPolicy,min_age,min_age,youth_policy,youth_policy.json,integer,property,지원 대상 최소연령
+YouthPolicy,max_age,max_age,youth_policy,youth_policy.json,integer,property,지원 대상 최대연령
+YouthPolicy,age_unlimited,age_unlimited,youth_policy,youth_policy.json,boolean,property,연령 제한 없음 여부
+YouthPolicy,min_income,min_income,youth_policy,youth_policy.json,numeric,property,정책 최소 소득 기준 원문 숫자
+YouthPolicy,max_income,max_income,youth_policy,youth_policy.json,numeric,property,정책 최대 소득 기준 원문 숫자
+YouthPolicy,income_condition_code,income_condition_code,youth_policy,youth_policy.json,string,property,소득조건 코드
+YouthPolicy,income_condition_normalized,income_condition_normalized,youth_policy,youth_policy.json,object,property,소득조건 구조화 객체
+YouthPolicy,region_code,region_code,youth_policy,youth_policy.json,string_or_array,relation_key,Region 연결 후보
+YouthPolicy,job_code,job_code,youth_policy,youth_policy.json,string_or_array,property,직업 조건 코드
+YouthPolicy,school_code,school_code,youth_policy,youth_policy.json,string_or_array,property,학력 조건 코드
+YouthPolicy,marital_status_code,marital_status_code,youth_policy,youth_policy.json,string,property,혼인상태 조건 코드
+YouthPolicy,application_period,application_period,youth_policy,youth_policy.json,string,property,신청기간 원문
+YouthPolicy,application_start_date,application_start_date,youth_policy,youth_policy.json,date_or_null,property,신청 시작일
+YouthPolicy,application_end_date,application_end_date,youth_policy,youth_policy.json,date_or_null,property,신청 종료일
+YouthPolicy,updated_at,updated_at,youth_policy,youth_policy.json,datetime,property,정책 데이터 최종 수정일시
+YouthPolicy,application_url,application_url,youth_policy,youth_policy.json,string,property,신청 URL
+YouthPolicy,operating_institution_id,operating_institution_id,youth_policy,youth_policy.json,string,relation_key,운영기관 연결 키
+YouthPolicy,operating_institution,operating_institution,youth_policy,youth_policy.json,string,property,운영기관명
+YouthPolicy,supervising_institution_id,supervising_institution_id,youth_policy,youth_policy.json,string,property,감독기관 식별자 원문
+YouthPolicy,supervising_institution,supervising_institution,youth_policy,youth_policy.json,string,property,감독기관명 원문
+YouthPolicy,policy_keyword,policy_keyword,youth_policy,youth_policy.json,string_or_array,property,정책 검색 키워드
+YouthPolicy,policy_major_code,policy_major_code,youth_policy,youth_policy.json,string,property,정책 대분류 코드
+YouthPolicy,policy_approval_status_code,policy_approval_status_code,youth_policy,youth_policy.json,string,property,정책 승인 상태 코드
+YouthPolicy,application_method,application_method,youth_policy,youth_policy.json,string,property,신청 방법 원문
+YouthPolicy,submission_document,submission_document,youth_policy,youth_policy.json,string,property,제출 서류 원문
+YouthPolicy,screening_method,screening_method,youth_policy,youth_policy.json,string,property,심사 방법 원문
+YouthPolicy,income_condition_note,income_condition_note,youth_policy,youth_policy.json,string,property,소득 조건 설명 원문
+YouthPolicy,participation_target,participation_target,youth_policy,youth_policy.json,string,property,참여 대상 설명 원문
+YouthPolicy,business_start_date,business_start_date,youth_policy,youth_policy.json,date_or_null,property,사업 시작일
+YouthPolicy,business_end_date,business_end_date,youth_policy,youth_policy.json,date_or_null,property,사업 종료일
+YouthPolicy,business_period_note,business_period_note,youth_policy,youth_policy.json,string,property,사업 기간 설명 원문
+YouthPolicy,reference_url_1,reference_url_1,youth_policy,youth_policy.json,string,property,정책 원문 참고 URL
+Institution,institution_id,institution_id,savings|deposit|loan,*_products.json,string,identifier,금융기관 식별자
+Institution,institution_name,institution_name,savings|deposit|loan,*_products.json,string,property,금융기관명
+Institution,operating_institution_id,operating_institution_id,youth_policy,youth_policy.json,string,identifier,정책 운영기관 식별자
+Institution,operating_institution,operating_institution,youth_policy,youth_policy.json,string,property,정책 운영기관명
+Region,region_code,region_code,youth_policy,youth_policy.json,string,identifier,정책 원본 지역 코드
+ProductDisclosure,disclosure_id,derived:product_id+disclosure_month,derived,generated,string,identifier,상품 ID와 공시월을 조합해 생성
+ProductDisclosure,product_id,product_id,savings|deposit|loan,*_products.json,string,relation_key,FinancialProduct 연결 키
+ProductDisclosure,disclosure_month,disclosure_month,savings|deposit|loan,*_products.json,string,property,공시월
+ProductDisclosure,disclosure_start_date,disclosure_start_date,savings|deposit|loan,*_products.json,date_or_null,property,공시 시작일
+ProductDisclosure,disclosure_end_date,disclosure_end_date,savings|deposit|loan,*_products.json,date_or_null,property,공시 종료일
+ProductDisclosure,collected_at,collected_at,metadata,collection_metadata,datetime_or_null,property,수집 파이프라인에서 생성할 운영 메타데이터
+ProductType,product_type_code,derived:dataset,derived,generated,string,identifier,적금·예금·대출 데이터셋에서 생성
+ProductType,product_type_name,derived:dataset,derived,generated,string,property,상품 유형 표시명
+Benefit,benefit_id,derived:policy_id+benefit_index,derived,youth_policy.json,string,identifier,정책 ID와 혜택 순번을 조합해 지원 혜택을 구분
+Benefit,amount_krw,support_scale_count,youth_policy,youth_policy.json,numeric_or_text,property,지원 규모 원문에서 숫자 파싱
+Benefit,description,support_content,youth_policy,youth_policy.json,string,property,지원 내용 원문
+Benefit,delivery_method,policy_provision_method_code,youth_policy,youth_policy.json,string,property,지원 제공 방식 코드
+Benefit,condition,additional_application_condition,youth_policy,youth_policy.json,string,property,추가 신청자격 조건
+Benefit,support_scale_limit_flag,support_scale_limit_flag,youth_policy,youth_policy.json,string,property,지원 규모 제한 여부
+Benefit,support_arrival_sequence_flag,support_arrival_sequence_flag,youth_policy,youth_policy.json,string,property,선착순·순차 지원 여부

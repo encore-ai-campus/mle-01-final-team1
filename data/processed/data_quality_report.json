@@ -1,0 +1,392 @@
+{
+  "datasets": {
+    "youth_policy": {
+      "record_count": 4018,
+      "duplicate_id_count": 0,
+      "conversion_issue_count": 0,
+      "conversion_issues": []
+    },
+    "loan": {
+      "product_count": 58,
+      "rate_option_count": 106,
+      "duplicate_product_id_count": 0,
+      "conversion_issue_count": 0,
+      "rate_range_violation_count": 27,
+      "average_rate_missing_count": 52,
+      "rate_range_violations": [
+        {
+          "product_id": "fss:rent:020000:202610:0010001:10561",
+          "institution_name": "우리은행",
+          "product_name": "우리전세론(주택금융보증)",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.39,
+          "average_rate": 5.38,
+          "max_rate": 6.09,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010016:20460801000001001",
+          "institution_name": "아이엠뱅크",
+          "product_name": "DGB 전세자금대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.82,
+          "average_rate": 4.87,
+          "max_rate": 5.82,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010016:20466201000001001",
+          "institution_name": "아이엠뱅크",
+          "product_name": "DGB POWER 전세보증대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.82,
+          "average_rate": 5.22,
+          "max_rate": 5.82,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010019:LN11010001072",
+          "institution_name": "광주은행",
+          "product_name": "청년맞춤형 전월세보증금 대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.16,
+          "average_rate": 3.81,
+          "max_rate": 4.36,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010020:14201126",
+          "institution_name": "제주은행",
+          "product_name": "주택전세자금대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 6.23,
+          "average_rate": 5.63,
+          "max_rate": 6.93,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010026:212020007",
+          "institution_name": "중소기업은행",
+          "product_name": "IBK전세대출 (HF)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.79,
+          "average_rate": 4.78,
+          "max_rate": 4.99,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010026:212020111",
+          "institution_name": "중소기업은행",
+          "product_name": "IBK전세대출 (SGI)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.03,
+          "average_rate": 4.84,
+          "max_rate": 5.23,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010026:212020111",
+          "institution_name": "중소기업은행",
+          "product_name": "IBK전세대출 (SGI)",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.96,
+          "average_rate": 5.93,
+          "max_rate": 6.46,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0010026:212020112",
+          "institution_name": "중소기업은행",
+          "product_name": "IBK전세대출 (HUG)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.78,
+          "average_rate": 4.59,
+          "max_rate": 4.98,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013175:2001105030002",
+          "institution_name": "농협은행주식회사",
+          "product_name": "NH전세대출(서울보증보험)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.65,
+          "average_rate": 4.61,
+          "max_rate": 6.55,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013175:2001108330001",
+          "institution_name": "농협은행주식회사",
+          "product_name": "NH전세대출(주택금융공사)",
+          "rate_type": "변동금리",
+          "repayment_type": "분할상환방식",
+          "min_rate": 4.55,
+          "average_rate": 4.53,
+          "max_rate": 6.55,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013175:2001108330001",
+          "institution_name": "농협은행주식회사",
+          "product_name": "NH전세대출(주택금융공사)",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.09,
+          "average_rate": 4.65,
+          "max_rate": 6.79,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013909:0300123202302",
+          "institution_name": "주식회사 하나은행",
+          "product_name": "주택신보위탁발행보증서담보대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.77,
+          "average_rate": 4.66,
+          "max_rate": 6.17,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013909:0300326201001",
+          "institution_name": "주식회사 하나은행",
+          "product_name": "우량주택전세론",
+          "rate_type": "변동금리",
+          "repayment_type": "분할상환방식",
+          "min_rate": 5.08,
+          "average_rate": 4.82,
+          "max_rate": 6.38,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013909:0300326201001",
+          "institution_name": "주식회사 하나은행",
+          "product_name": "우량주택전세론",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.08,
+          "average_rate": 4.81,
+          "max_rate": 6.38,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0013909:0300373201001",
+          "institution_name": "주식회사 하나은행",
+          "product_name": "하나전세금안심대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.07,
+          "average_rate": 4.69,
+          "max_rate": 6.37,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0014674:01021000700000000001",
+          "institution_name": "주식회사 케이뱅크",
+          "product_name": "전월세보증금 대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.62,
+          "average_rate": 4.27,
+          "max_rate": 4.62,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0014674:01021000700000000003",
+          "institution_name": "주식회사 케이뱅크",
+          "product_name": "고정금리 전월세보증금 대출",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.87,
+          "average_rate": 4.83,
+          "max_rate": 5.17,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0014807:1151",
+          "institution_name": "수협은행",
+          "product_name": "Sh전세보증대출(주택금융공사)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.26,
+          "average_rate": 5.07,
+          "max_rate": 6.46,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0014807:1170",
+          "institution_name": "수협은행",
+          "product_name": "Sh전세보증대출(서울보증보험)",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.24,
+          "average_rate": 5.1,
+          "max_rate": 6.44,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0015130:03004",
+          "institution_name": "주식회사 카카오뱅크",
+          "product_name": "HF 전월세보증금 대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.47,
+          "average_rate": 4.33,
+          "max_rate": 4.67,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0015130:03027",
+          "institution_name": "주식회사 카카오뱅크",
+          "product_name": "SGI 전월세보증금 대출",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.68,
+          "average_rate": 4.52,
+          "max_rate": 4.88,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0015130:03027",
+          "institution_name": "주식회사 카카오뱅크",
+          "product_name": "SGI 전월세보증금 대출",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.32,
+          "average_rate": 5.68,
+          "max_rate": 5.52,
+          "violation_types": [
+            "average_above_max"
+          ]
+        },
+        {
+          "product_id": "fss:rent:020000:202610:0017801:2001040010021",
+          "institution_name": "토스뱅크 주식회사",
+          "product_name": "전월세보증금대출 플러스",
+          "rate_type": "변동금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 4.7,
+          "average_rate": 4.4,
+          "max_rate": 4.7,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:050000:202610:0010594:ABLKeymoney1",
+          "institution_name": "에이비엘생명보험주식회사",
+          "product_name": "ABL전세자금대출",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.1,
+          "average_rate": 4.74,
+          "max_rate": 5.2,
+          "violation_types": [
+            "average_below_min"
+          ]
+        },
+        {
+          "product_id": "fss:rent:050000:202610:0010628:4354",
+          "institution_name": "롯데손해보험주식회사",
+          "product_name": "롯데손해보험\n전세자금대출",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 5.7,
+          "average_rate": 6.43,
+          "max_rate": 6.4,
+          "violation_types": [
+            "average_above_max"
+          ]
+        },
+        {
+          "product_id": "fss:rent:050000:202610:0010634:10445004",
+          "institution_name": "현대해상화재보험주식회사",
+          "product_name": "현대해상_임대아파트론(민간)",
+          "rate_type": "고정금리",
+          "repayment_type": "만기일시상환방식",
+          "min_rate": 6.74,
+          "average_rate": 7.09,
+          "max_rate": 7.04,
+          "violation_types": [
+            "average_above_max"
+          ]
+        }
+      ],
+      "conversion_issues": []
+    },
+    "savings": {
+      "product_count": 338,
+      "rate_option_count": 1539,
+      "duplicate_product_id_count": 0,
+      "conversion_issue_count": 0,
+      "rate_range_violation_count": 0,
+      "average_rate_missing_count": 1539,
+      "rate_range_violations": [],
+      "conversion_issues": []
+    },
+    "deposit": {
+      "product_count": 434,
+      "rate_option_count": 2808,
+      "duplicate_product_id_count": 0,
+      "conversion_issue_count": 0,
+      "rate_range_violation_count": 0,
+      "average_rate_missing_count": 2808,
+      "rate_range_violations": [],
+      "conversion_issues": []
+    }
+  }
+}

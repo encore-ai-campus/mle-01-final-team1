@@ -1,0 +1,17 @@
+entity_name,source_or_domain,identifier,description,notes
+User,service,user_id,서비스 사용자,인증된 사용자 컨텍스트로 식별
+BasicProfile,service,user_id,사용자 기본 프로필,MainState.basic_profile과 동일 계약
+FinancialProfile,service,user_id,사용자 금융 프로필,MainState.financial_profile과 동일 계약
+Goal,service,goal_id,사용자의 금융목표,basic_profile.goals[]의 그래프 표현
+Holding,service,holding_id,사용자가 보유한 금융상품,financial_profile.holdings[]의 그래프 표현
+Liability,service,liability_id,사용자의 대출·할부 부채,financial_profile.liabilities[]의 그래프 표현
+FinancialProduct,external_data,product_id,예금·적금·대출 상품,processed 상품 데이터와 연결
+RateOption,external_data,rate_option_id,상품별 금리 조건,상품·금리 분리 파일과 연결
+YouthPolicy,external_data,policy_id,청년정책,정책 정제 데이터와 연결
+Institution,external_data,institution_id,금융기관·운영기관,기관 코드와 명칭으로 관리
+Region,reference_data,region_code,지역 조건,정책 지역 코드와 사용자 지역을 연결
+Consultation,service,consultation_id,상담 세션 및 이력,상담 결과와 근거 참조 저장
+Scenario,service,scenario_id,저장하지 않는 가정·시뮬레이션,scenario_state의 영속화와 구분
+ProductDisclosure,external_data,disclosure_id,금융상품의 공시 버전,product_id와 disclosure_month 조합으로 생성
+ProductType,reference_data,product_type_code,상품 유형 분류,savings·deposit·loan 분류 기준
+Benefit,external_data,benefit_id,정책이 제공하는 금액과 지원 방식,지원내용·지원규모 원문에서 구조화

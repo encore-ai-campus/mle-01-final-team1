@@ -1,0 +1,21 @@
+from_entity,relation,to_entity,cardinality,source,description,notes
+User,HAS_BASIC_PROFILE,BasicProfile,1:1,service,사용자와 기본 프로필 연결,인증된 사용자 범위로 관리
+User,HAS_FINANCIAL_PROFILE,FinancialProfile,1:1,service,사용자와 금융 프로필 연결,버전으로 동시 수정 확인
+BasicProfile,HAS_GOAL,Goal,1:N,service,기본 프로필의 금융목표,goal_id로 변경·삭제
+FinancialProfile,HAS_HOLDING,Holding,1:N,service,금융 프로필의 보유상품,holding_id로 식별
+FinancialProfile,HAS_LIABILITY,Liability,1:N,service,금융 프로필의 부채,liability_id로 식별
+Holding,INSTANCE_OF,FinancialProduct,N:1,service·external_data,보유상품과 상품 데이터 연결,product_ref가 검증된 경우만 연결
+FinancialProduct,HAS_DISCLOSURE,ProductDisclosure,1:N,external_data,상품의 공시 버전 연결,상품 ID와 공시월 기준
+ProductDisclosure,HAS_RATE_OPTION,RateOption,1:N,external_data,공시 버전별 금리옵션 연결,공시월과 금리옵션 기준
+FinancialProduct,HAS_PRODUCT_TYPE,ProductType,N:1,reference_data,상품 유형 연결,savings·deposit·loan으로 통일
+FinancialProduct,OFFERED_BY,Institution,N:1,external_data,금융기관과 상품 연결,institution_id로 연결
+YouthPolicy,OPERATED_BY,Institution,N:1,external_data,정책 운영기관 연결,운영기관 코드 기준
+YouthPolicy,APPLIES_TO,Region,N:M,external_data,정책 적용 지역 연결,region_code 배열을 관계로 변환 가능
+YouthPolicy,HAS_BENEFIT,Benefit,1:N,external_data,정책이 제공하는 지원금액·방식 연결,지원 원문에서 확인된 경우만 연결
+User,MAY_BE_ELIGIBLE_FOR,YouthPolicy,N:M,runtime,사용자별 정책 자격 후보,고정 상품 속성이 아닌 실행 결과
+Goal,RECOMMENDS,FinancialProduct,N:M,runtime,목표에 맞는 상품 추천,상담 실행 결과로 생성
+Goal,SUPPORTED_BY,YouthPolicy,N:M,runtime,목표와 정책 혜택 연결,근거와 조건을 함께 저장
+User,HAS_CONSULTATION,Consultation,1:N,service,사용자 상담 이력 연결,상담 결과와 참조 ID 저장
+Consultation,USES_PROFILE_SNAPSHOT,BasicProfile,N:1,service,상담 당시 기본 프로필 스냅샷 참조,전체 State를 복사하지 않음
+Consultation,USES_PROFILE_SNAPSHOT,FinancialProfile,N:1,service,상담 당시 금융 프로필 스냅샷 참조,버전·시점으로 추적
+User,OWNS_SCENARIO,Scenario,1:N,runtime,사용자의 시뮬레이션 가정,실제 프로필을 변경하지 않음
