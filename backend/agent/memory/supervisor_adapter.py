@@ -1,12 +1,12 @@
-
 from typing import Any
 
 from .contracts import MemorySearchRequest
 from .memory_service import MemoryService
+from .postgres_memory_service import PostgresMemoryService
 
 
 def retrieve_memory_for_supervisor(
-    service: MemoryService,
+    service: MemoryService | PostgresMemoryService,
     request: MemorySearchRequest,
     *,
     authenticated_user_id: str,
@@ -30,22 +30,13 @@ def retrieve_memory_for_supervisor(
 
 
 if __name__ == "__main__":
-    # 예시 실행에서는 동일한 서비스 인스턴스를 사용한다.
-    service = MemoryService()
-
-    service.save_memory(
-        {
-            "memory_type": "user_decision",
-            "content": "적금 B를 중도해지 조건 때문에 제외함",
-            "source_ref": "advice_001",
-        },
-        authenticated_user_id="demo_user_001",
-    )
+    # PostgreSQL에 저장된 기억을 검색한다.
+    service = PostgresMemoryService()
 
     result = retrieve_memory_for_supervisor(
         service,
-        {"query": "적금 B"},
-        authenticated_user_id="demo_user_001",
+        {"query": "savings product B"},
+        authenticated_user_id="test_user_001",
     )
 
-    print("Supervisor 전달 결과:", result)
+    print("SUPERVISOR MEMORY:", result)
