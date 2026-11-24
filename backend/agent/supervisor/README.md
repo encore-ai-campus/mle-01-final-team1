@@ -1,6 +1,6 @@
-# Supervisor v14 — 독립 분기 우선 및 계획 안정화
+# Supervisor v15 — 토큰 및 LLM 호출 최적화
 
-기준: GitHub main `79535f40ea1b12bd0aed3a612168ecb8fcdbb231` (PR #5, Supervisor v1 추가 / 기존 v13), State/Profile State v3.4.
+기준: GitHub main `fb9f4d6f89c2cfbe222cd51770ab4d6dc42154cd` (PR #7, Supervisor v2 분기 전략 수정 / 기존 v14), State/Profile State v3.4.
 
 ## 1. 적용 및 실행
 
@@ -67,8 +67,8 @@ supervisor/
 flowchart TD
     A[실제 질문과 MainState] --> B[기본 Memory 조회]
     B --> R[Reason: 실제 OpenAI API]
-    R <-->|필요한 도구 호출/결과| T[Profile / Memory / Scenario]
-    R --> P[Plan: 전체 작업 DAG]
+    R <-->|추가 사실 조회 / 준비 필요| T[Profile / Memory / 선택적 Scenario]
+    R -->|intent + 분기 초안 + DAG| P[Plan: 시나리오 및 DAG 정규화]
     P --> F[Finalize: 계약 검증]
     R -->|필수 질문 또는 검증된 결과 설명| F
     F -->|검증 반려| R
@@ -83,7 +83,8 @@ flowchart TD
 - `main_state_after_supervisor`: 원본 MainState와 부분 업데이트를 합친 결과.
 - `execution_waves`: 계획의 정적 병렬/순차 단계. 실제 실행 결과가 아니다.
 - `scenario_execution`: 분기 있는 경우 공통 작업 ID, 각 분기 작업 ID, 필요한 공통 선행 ID, 종료 작업 및 국소 실행 단계. Plan trace와 실행 보고서에만 포함되며 MainState에는 추가하지 않는다.
-- `llm_calls`, `llm_usage`: 실제 API 호출 횟수와 응답에 포함된 사용량.
+- `llm_calls`, `llm_usage`, `llm_usage_totals`: 실제 API 호출 횟수, 호출별 토큰 사용량 및 확인 가능한 합계. 응답에 있는 경우 캐시 입력/추론 토큰도 표시한다.
+- `llm_input_sizes`: 호출별 프롬프트·Context·함수 스키마의 UTF-8 바이트 크기. 토큰 수와는 다르다.
 
 `--quiet`는 실시간 로그를 생략한다. `--output`은 실행 보고서 전체, `--state-output`은 합성 MainState만 저장한다. 외부 전달에는 `SupervisorOutcome.update`와 `next_node`를 사용한다. trace에는 사용자 금융정보가 포함될 수 있으므로 민감정보가 들어간 로그를 공개하지 않는다. 운영에서는 trace_sink를 연결하지 않는 것이 기본이다.
 
@@ -93,13 +94,20 @@ flowchart TD
 
 `submit_plan`의 `intent`에는 `purpose`, `operation`, `supplied_values`, `profile_update_status`가 필수이다. `compare`에는 `analysis_mode`도 필요하다. 경제적 행동/가정 비교(`strategy_compare`)와 복수 재무 로드맵 비교(`compare`+`roadmap`)는 독립 시나리오 2~3개를 요구한다. 단순 동일조건 상품 비교는 `candidate_compare`로 비분기 계획이 가능하다. 이 규칙은 기존 MainState 필드를 활용하며 새 최상위 필드를 만들지 않는다.
 
-예: 월 30만 원 vs 40만 원의 5년 후 자금 비교. `prepare_scenarios`에서 각 분기의 `assumptions.horizon_months=60`, 가상 `holding_actions=[{"action":"subscribe","target_criteria":{"monthly_contribution_krw":300000},"status":"hypothetical"}]`를 준비한다(두 번째 분기는 400000). ID를 생략하거나 null/빈 문자열로 주면 Python이 명시 ID와 충돌하지 않는 `s_01`, `s_02` 등의 ID를 부여한다. 명시 중복·잘못된 ID 및 미확인 실제 계약 참조는 반려하고, 후속 계획은 반환된 ID를 사용한다. 평가 기간과 상품 계약 만기(`term_months`)는 구분한다. 금리를 확인하지 않았다면 만들지 않는다. 현재 상품 탐색이 필요하면 `product_300 → fund_300`과 `product_400 → fund_400`을 각 분기에 독립 배정한다. 동일 특정 상품의 약관/금리를 조회하는 경우만 예외적으로 공유할 수 있다. 단순 원금/사용자가 제시한 금리 계산이면 Product를 생략할 수 있다.
+예: 월 30만 원 vs 40만 원의 5년 후 자금 비교. 추가 사실 조회가 필요 없으면 Reason이 `submit_plan` 한 번으로 `intent`, `scenario_state` 초안, `execution_plan`을 같이 제출한다. Plan은 기존 도구와 동일한 검사 함수(`prepare_verified_scenarios`)를 실행한다. 각 분기의 `assumptions.horizon_months=60`, 가상 `holding_actions=[{"action":"subscribe","target_criteria":{"monthly_contribution_krw":300000},"status":"hypothetical"}]`를 준비한다(두 번째 분기는 400000). ID를 생략하거나 null/빈 문자열로 주면 Python이 명시 ID와 충돌하지 않는 `s_01`, `s_02` 등의 ID를 부여한다. 명시 중복·잘못된 ID 및 미확인 실제 계약 참조는 반려하고, 동시 제출에서는 명시한 ID를 각 작업에서 참조하며, ID 생략 시 생성된 ID와 참조가 일치해야 한다. 참조가 모호하면 반려한다. 평가 기간과 상품 계약 만기(`term_months`)는 구분한다. 금리를 확인하지 않았다면 만들지 않는다. 현재 상품 탐색이 필요하면 `product_300 → fund_300`과 `product_400 → fund_400`을 각 분기에 독립 배정한다. 동일 특정 상품의 약관/금리를 조회하는 경우만 예외적으로 공유할 수 있다. 단순 원금/사용자가 제시한 금리 계산이면 Product를 생략할 수 있다.
 
 각 분기는 같은 평가 기준으로 계산하되, 다른 상품을 선택하는 전략 비교에서는 적용 상품과 금리의 차이를 밝힌다. 상품을 찾지 못한 정상 조회 결과는 확인된 범위의 원금 계산을 막지 않으며, 금리 의존 총액은 미확정으로 표시한다. 실제 필수 선행 작업 실패는 Dispatcher/Collector의 재계획 대상으로 처리해야 한다. 상위 Dispatcher는 같은 Agent라도 task별로 별도 실행 ID 및 Local State를 사용하고, 해당 분기 `holding_actions`만 `profile_view`에 합성한다. 시나리오 간 비교는 Final Advice의 책임이다.
 
 ```powershell
 uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금은 5년 뒤 총 금액이 얼마나 차이 나?" --output result.json --state-output next_state.json
 ```
+
+**LLM 호출과 프롬프트 최적화:**
+
+- 단순 시나리오 생성은 별도의 LLM 왕복 없이 Plan 내부에서 정규화한다. 기존 `prepare_scenarios` 도구는 호환성을 위해 유지한다. 실제 Profile/Memory 조회, 필수 정보 부족, 검증 반려가 있으면 기존 반복 흐름을 사용한다.
+- 프롬프트는 Agent의 역할과 판단 규칙만 설명하고, `objective`는 작업 목적과 필요한 결과·고유 제약을 1~2문장으로 요청한다. 전문 Agent의 내부 처리 규칙을 반복하지 않는다. Dispatcher가 전달하지 않는 필수 조건(예: 평가 기간)은 명시해야 한다.
+- Reason은 요약이 있으면 최근 4개, 없으면 최근 8개의 대화 메시지를 전달하며, 최신 사용자 질문은 반드시 보존한다. 프로필 가용 여부는 그룹화하고 현재 run의 결과·검수만 포함한다. 성공한 Scenario 요청의 중복 원문과 중복 기억 본문을 제거한다. 상세 기억이 병합 상한을 넘으면 아직 포함되지 않은 항목만 추가한다. 원본 State·도구 관찰·안전 검증은 그대로 유지한다.
+- 단일 제출은 **추가 조회·반려가 없고 모델이 유효한 초안을 한 번에 반환할 때** 한 번의 LLM 호출로 끝난다. API 실제 비용/토큰은 입력과 모델에 따라 달라진다. 출력의 `llm_usage_totals`를 비교한다.
 
 위 명령은 실제 API를 호출한다. 코드가 강제하는 것은 intent·분기 coverage·DAG 의존성 등 구조적 계약이고, 자연어 업무 목적의 의미적 정확성은 실제 모델 평가가 필요하다. `scenario_execution`은 계획을 보여주는 진단 정보이며 운영 Dispatcher는 `execution_plan.tasks[]`를 소비한다.
 
@@ -148,6 +156,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 제작 환경에는 실제 API 키와 LangGraph가 없어 운영 모델 호출과 실제 그래프 실행을 검증하지 않았다. 로컬 오프라인 검사 결과와 미실행 항목을 아래에 기록한다.
 
-- 오프라인 계약 검사 19개 중 16개 통과. 기존 검사 유지, ID 자동 생성·보존, 중복/잘못된 ID 거부, 독립 분기 경로, 공통 작업 사용 범위 및 공통 Fund 금지 검사 추가.
+- 오프라인 계약 검사 25개 중 22개 통과(기존 19개 유지 + 6개 추가). 한 번의 HTTP 계약 호출로 분기/DAG 반환, ID 복구와 잘못된 참조 반려, 기준 계약 참조 검증, 추가 Memory 조회 왕복 유지, Context의 필수값/권한 격리 및 기억 중복 제거를 검사했다.
 - 실제 Profile/Memory MVP 연동 2개 및 부모 LangGraph Command 이동 1개: 제작 환경에 해당 모듈이 없어 미실행.
 - 실제 OpenAI API 호출 및 실제 전문 Agent 실행: 미검증. 기본 실행은 실제 API만 사용한다.
+- 동일한 2분기 적금 비교의 제어된 계약 입력으로 비교한 값(실제 토큰이 아님): 시스템 프롬프트 UTF-8 16,533 → 7,540 bytes, LLM 호출 2 → 1, 프롬프트·스키마·Context 합계 46,582 → 12,575 bytes. API 내부 직렬화 오버헤드와 출력 토큰을 제외했다.

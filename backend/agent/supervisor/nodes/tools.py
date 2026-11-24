@@ -8,7 +8,7 @@ from ..tools.ports import (
     normalize_profile_result,
     validate_memory_request, validate_profile_request,
 )
-from ..tools.scenarios import prepare_scenarios
+from ..tools.scenarios import prepare_verified_scenarios
 from ..tools.memory import call_memory, merge_memory
 from ..tools.profile_fields import select_fields, validate_read_fields, source_with_reads, FIELDS, METADATA
 from copy import deepcopy
@@ -90,32 +90,7 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
         else:
             result = call_memory(supervisor.ports.retrieve_memory, args)
     elif name == "prepare_scenarios":
-        result = prepare_scenarios(args)
-        proposed_baseline = result["scenario_state"].get("baseline_ref")
-        if proposed_baseline:
-            confirmed = [obs["result"] for obs in state.get("observations", [])
-                         if obs["name"] == "profile_agent" and obs.get("request", {}).get("operation") == "inspect"
-                         and obs["result"].get("baseline_ref") == proposed_baseline]
-            ready_specs = [spec for obs in state.get("observations", []) if obs["name"] == "profile_agent"
-                           and obs["result"].get("baseline_ref") == proposed_baseline
-                           for spec in obs["result"].get("branch_specs", []) if spec.get("status") == "ready"]
-            existing = state["source"].get("scenario_state") or {}
-            if not confirmed and not ready_specs and existing.get("baseline_ref") != proposed_baseline:
-                raise SupervisorContractError("Unverified baseline_ref")
-            refs = {h["holding_id"] for r in confirmed
-                    for h in (r.get("profile", {}).get("financial_profile", {}).get("holdings") or [])
-                    if h.get("status") == "active"}
-            if existing.get("baseline_ref") == proposed_baseline:
-                refs.update(a["holding_ref"] for branch in existing.get("scenarios", [])
-                            for a in branch.get("assumptions", {}).get("holding_actions", [])
-                            if a.get("action") in {"keep", "terminate"} and a.get("holding_ref"))
-            for branch in result["scenario_state"]["scenarios"]:
-                for a in branch.get("assumptions", {}).get("holding_actions", []):
-                    if a.get("action") not in {"keep", "terminate"}:
-                        continue
-                    branch_verified = any(spec["id"] == branch["id"] and any(isinstance(x, dict) and x.get("holding_ref") == a.get("holding_ref") and x.get("action") == a["action"] for x in spec.get("holding_actions", [])) for spec in ready_specs)
-                    if a.get("holding_ref") not in refs and not branch_verified:
-                        raise SupervisorContractError("holding_ref not present in verified baseline")
+        result = prepare_verified_scenarios(args, state)
     else:
         raise SupervisorContractError("지원되지 않는 내부 도구입니다.")
     observations = [*state.get("observations", []), {

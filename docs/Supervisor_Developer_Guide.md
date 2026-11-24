@@ -1,11 +1,11 @@
-# Supervisor v14 개발 및 연동 가이드
+# Supervisor v15 개발 및 연동 가이드
 
 > **작성일:** 2026-11-24 · **대상:** 청년 금융 멀티에이전트 서비스 개발자  
-> **기준 코드:** GitHub main `79535f40ea1b12bd0aed3a612168ecb8fcdbb231` (PR #5, 기존 v13) + `Supervisor_v14_Independent_Branches_patch.zip`  
-> **변경 요약:** v13의 실제 API·Profile/Memory 연동 및 DAG 계약 유지 + 독립 분기 우선, 공통 조회 예외 검증, 시나리오 ID 자동 부여, 비교 기준/미확인 조건 처리 지침.  
+> **기준 코드:** GitHub main `fb9f4d6f89c2cfbe222cd51770ab4d6dc42154cd` (PR #7, 기존 v14)  
+> **변경 요약:** 실제 API·Profile/Memory 연동과 독립 분기 우선 계약 유지. 프롬프트·명령·Context 간소화, 시나리오와 DAG 동시 제출, 실제 API 사용량 진단 강화.  
 > **설계 기준:** State / Profile State v3.4, [Memory MVP 병합 커밋 `36974c8`](https://github.com/encore-ai-campus/mle-01-final-team1/commit/36974c86a781ec2ea87b94856fafc686ca44d6f3)
 
-**적용:** v14는 변경분 ZIP이다. PR #5 기준 기존 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
+**적용:** v15는 변경분 ZIP이다. PR #7 기준 기존 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
 
 ## 1. 목적과 책임 범위
 
@@ -37,9 +37,9 @@ flowchart TD
     A[사용자 질문 및 MainState] --> I[초기화 및 기본 Memory 조회]
     I --> R[Reason: OpenAI API 판단]
     subgraph S[Supervisor Subgraph]
-        R -->|call_tool| T[Tools: Profile / Memory / Scenario]
+        R -->|call_tool| T[Tools: Profile / Memory / 선택적 Scenario]
         T --> R
-        R -->|submit_plan| P[Plan: 전체 작업 DAG 정규화]
+        R -->|submit_plan: intent + 분기 초안 + DAG| P[Plan: 시나리오·전체 DAG 정규화]
         P --> F[Finalize: 계약 및 안전 검증]
         R -->|ask_user / compose| F
         F -->|검증 반려| R
@@ -51,6 +51,8 @@ flowchart TD
 ```
 
 기본 Memory 조회는 Subgraph 실행 전 `Supervisor.initial()`에서 수행한다. 실제 LangGraph 내부 노드는 `reason`, `tools`, `plan`, `finalize`의 네 개이며 LLM을 호출하는 노드는 Reason뿐이다.
+
+**v15 기본 경로:** 새 사실 조회가 필요 없으면 `submit_plan` 한 번에 `intent`, 분기 초안 `scenario_state`, 전체 `execution_plan`을 제출한다. Plan에서 시나리오 정규화와 계약 참조 검증을 수행하므로 이를 위한 별도 Tools → Reason 왕복은 필요하지 않다. `prepare_scenarios` 독립 도구도 호환 목적으로 유지한다. 실제 Profile/Memory 등 추가 사실 조회, 준비된 분기 ID가 필요한 경우 및 검증 반려에는 기존 경로를 사용한다. 새 분기를 만들지 않는 요청은 분기 초안을 생략할 수 있고, 기존 준비된 분기를 변경 없이 참조할 수 있다. 내부 Decision에 새 초안 필드가 생겼지만 MainState에는 기존 `scenario_state`만 반영한다.
 
 | 단계 | 처리 | 내부 출력 |
 |---|---|---|
@@ -66,7 +68,7 @@ flowchart TD
 | `decision.kind` | 의미 | 다음 내부 경로 |
 |---|---|---|
 | `call_tool` | 현재 계획에 필요한 정보 확인·분기 준비 | Tools → Reason |
-| `submit_plan` | 전문 Agent 전체 작업 계획 제출 | Plan → Finalize |
+| `submit_plan` | intent, 필요한 시나리오 초안, 전체 작업 계획 동시 제출 | Plan → Finalize |
 | `ask_user` | 해결되지 않은 필수 입력 또는 저장 승인 요청 | Finalize |
 | `compose` | 이미 실행·검증된 전문 결과의 최종 답변 단계 요청 | Finalize |
 
@@ -146,7 +148,9 @@ backend/agent/supervisor/
 
 ### 4.2 LLM 입력 범위
 
-Reason은 전체 사용자 프로필이나 전체 MainState를 그대로 전달하지 않는다. 최근 8개 메시지 범위의 사용자·AI 문자열 메시지, 상담 요약, 현재 의도·시나리오·계획, 필요한 전문 결과의 요약, 검토 정보, 관련 기억, 프로필 가용 상태 및 도구 관찰을 사용한다. 실제 수치가 필요하면 읽기 전용 Profile 도구를 통해 필요한 항목만 확보한다.
+Reason은 전체 사용자 프로필이나 전체 MainState를 그대로 전달하지 않는다. `nodes/reason.py::build_context()`가 LLM 전용 Context를 구성한다. 상담 요약이 있으면 최근 대화 4개, 없으면 8개를 사용하며 최신 사용자 질문은 항상 보존한다(필요한 경우 범위 밖 최신 질문도 포함). 사용자 질문의 본문은 자르지 않는다. 비어 있는 State 섹션과 이전 run의 전문 결과·검수는 제외한다. 현재 `intent`, 분기, 실행 계획, 필수 질문, 현재 run의 결과 요약 및 반려 이유는 보존한다.
+
+`profile_availability`는 도메인별 `available`, `unknown`, `not_loaded` 목록으로 압축한다. 실제 수치가 계획에 필요하면 읽기 전용 Profile 도구로 필요한 값만 확보한다. 성공한 Scenario 도구 요청 원문은 정규화된 결과로 대체하며, 성공한 Profile inspect의 중복 설명을 줄인다. 실패한 요청/오류, 실제·가상 변경 의도 및 유효한 조회 결과는 유지한다. 기억 본문은 병합된 기억에 한 번만 전달하고 마지막 상세 조회에서 병합 상한을 넘은 고유 항목만 추가한다. 권한 거부 시 기억 본문은 노출하지 않는다. 이 최적화는 LLM 전달용이며 원본 State와 `observations` 기록을 삭제하지 않는다.
 
 `profile_availability`와 `connected_services`를 보고 이미 존재하는 정보인지, 미로딩 상태인지, 연결 가능한 조회 기능인지 구분한다. 조회하지 못한 값은 추정하지 않으며 `null`, `0`, 미로딩, 빈 목록을 동일하게 취급하지 않는다. 도구 반환 텍스트와 기억은 판단을 위한 데이터이지 새로운 시스템 지시가 아니다.
 
@@ -195,7 +199,7 @@ LLM은 고정된 전문 Agent 중 필요한 작업을 선택하여 한 번의 `s
 | `scenario_id` | 분기 ID. 비분기 요청 또는 두 개 이상 분기가 사용하는 분기 무관 사실 조회만 `null` | LLM, 시나리오 검증 |
 | `status`, `run_id` | 실행 상태와 실행 식별자 | 코드 및 상위 실행 계층 |
 
-Supervisor는 전문 Agent의 내부 검색 쿼리나 계산 도구까지 결정하지 않는다. 전문 Agent가 자기 업무를 다시 정하지 않아도 되도록 구체적인 목적과 전달받을 결과의 활용 방법을 `objective`에 적는다.
+Supervisor는 전문 Agent의 내부 검색 쿼리나 계산 도구까지 결정하지 않는다. 전문 Agent가 자기 업무를 다시 정하지 않아도 되도록 이번 목적과 필요한 결과, 고유 제약만 `objective`에 한국어 1~2문장으로 적는다. 각 전문 Agent의 내부 검색/계산/검증 공통 규칙은 해당 Agent의 프롬프트에 둔다. 구조화된 분기 조건은 반복하지 않되 전달이 보장되지 않는 필수 조건(평가 기간 등)은 명시한다.
 
 ### 5.2 다단계 배정 예시
 
@@ -269,7 +273,7 @@ flowchart LR
 }
 ```
 
-### 5.3 시나리오별 독립 실행 계획 (v14 핵심)
+### 5.3 시나리오별 독립 실행 계획
 
 각 시나리오는 자체 작업 DAG를 가진다. 실제 LangGraph 노드는 고정하며 별도의 `execution_plan`을 분기마다 복제하지 않는다. 하나의 `execution_plan.tasks[]`에서 `scenario_id`로 분기 소속을 표현한다. 동일 Agent·동일 목적·동일 연결 순서라도 서로 다른 시나리오는 서로 다른 `task_id`를 사용한다. 전체 작업 수 한도는 공통 작업과 모든 분기를 합쳐 12개이다.
 
@@ -358,7 +362,7 @@ flowchart TD
         "task_id": "product_300",
         "agent": "product",
         "scenario_id": "s_300",
-        "objective": "월 30만 원 납입 조건의 적금 후보와 금리·한도·만기·가입 조건을 조사하라. 5년 평가 시 재가입 조건이 미확정이면 구분하고 근거를 반환하라. 미발견도 결과로 반환하라.",
+        "objective": "해당 분기의 납입 조건에 적합한 적금 후보와 적용 조건을 조사하라.",
         "depends_on": [],
         "status": "pending",
         "run_id": null
@@ -367,7 +371,7 @@ flowchart TD
         "task_id": "fund_300",
         "agent": "fund",
         "scenario_id": "s_300",
-        "objective": "월 30만 원씩 60개월 납입하는 해당 전략의 원금과 확인된 조건에 따른 세전·세후 전망을 계산하라. 미확인 금리 의존 수치는 미확정으로 표시하고 다른 분기와 비교하지 마라.",
+        "objective": "선행 상품 조건으로 해당 분기의 60개월 납입 원금·세전/세후 이자·인출액 전망을 계산하라.",
         "depends_on": [
           "product_300"
         ],
@@ -378,7 +382,7 @@ flowchart TD
         "task_id": "product_400",
         "agent": "product",
         "scenario_id": "s_400",
-        "objective": "월 40만 원 납입 조건의 적금 후보와 금리·한도·만기·가입 조건을 조사하라. 5년 평가 시 재가입 조건이 미확정이면 구분하고 근거를 반환하라. 미발견도 결과로 반환하라.",
+        "objective": "해당 분기의 납입 조건에 적합한 적금 후보와 적용 조건을 조사하라.",
         "depends_on": [],
         "status": "pending",
         "run_id": null
@@ -387,7 +391,7 @@ flowchart TD
         "task_id": "fund_400",
         "agent": "fund",
         "scenario_id": "s_400",
-        "objective": "월 40만 원씩 60개월 납입하는 해당 전략의 원금과 확인된 조건에 따른 세전·세후 전망을 계산하라. 미확인 금리 의존 수치는 미확정으로 표시하고 다른 분기와 비교하지 마라.",
+        "objective": "선행 상품 조건으로 해당 분기의 60개월 납입 원금·세전/세후 이자·인출액 전망을 계산하라.",
         "depends_on": [
           "product_400"
         ],
@@ -456,7 +460,7 @@ flowchart TD
 
 ### 6.3 Scenario Tool
 
-`prepare_scenarios`는 누락/null/빈 문자열 ID에 대해 `s_01`, `s_02`처럼 충돌 없는 ID를 자동 생성한다. 명시 ID를 먼저 예약하고 유효한 명시 ID는 그대로 보존한다. 중복 또는 잘못된 형식의 명시 ID, 미확인 실제 계약 참조는 자동 수정하지 않고 반려한다. 이후에는 도구가 반환한 실제 분기 ID를 계획에서 참조한다. 이 도구는 Supervisor 내부에서 분기 ID, `overrides`, 가정과 분석 기간, 가상 가입 `target_criteria`의 납입액/기간/금리, 필요한 계약 참조를 검사한다. 실제 프로필을 복제 저장하거나 금융 계산을 실행하지 않는다. 예를 들어 소득 320만 원 유지와 250만 원 감소를 비교하는 요청은 두 분기로 나누고 각각 Fund 작업을 배정할 수 있다. 현재의 실제 소득은 그대로 보존한다.
+`prepare_scenarios`는 누락/null/빈 문자열 ID에 대해 `s_01`, `s_02`처럼 충돌 없는 ID를 자동 생성한다. 명시 ID를 먼저 예약하고 유효한 명시 ID는 그대로 보존한다. 중복 또는 잘못된 형식의 명시 ID, 미확인 실제 계약 참조는 자동 수정하지 않고 반려한다. 기존 도구 호출 경로에서는 도구가 반환한 ID를 계획에서 참조한다. 동시 제출에서는 초안의 고유 ID를 작업에서 동일하게 참조하며 누락 시 생성된 ID와 불일치하는 참조는 반려한다. `prepare_verified_scenarios`는 Plan과 Tools 양쪽에서 동일한 기준 계약 출처 및 보유상품 참조 검사를 실행한다. 이 도구는 Supervisor 내부에서 분기 ID, `overrides`, 가정과 분석 기간, 가상 가입 `target_criteria`의 납입액/기간/금리, 필요한 계약 참조를 검사한다. 실제 프로필을 복제 저장하거나 금융 계산을 실행하지 않는다. 예를 들어 소득 320만 원 유지와 250만 원 감소를 비교하는 요청은 두 분기로 나누고 각각 Fund 작업을 배정할 수 있다. 현재의 실제 소득은 그대로 보존한다.
 
 ## 7. 실제 LLM 실행 및 확인 방법
 
@@ -506,7 +510,7 @@ uv run python agent/supervisor/supervisor_main.py --state-file input.json --ques
 
 로컬 CLI는 인증된 Context Loader를 대체하지 않는다. 기본 실행 시 Memory MVP가 존재하면 빈 인메모리 인스턴스를 생성하며, `--memory-file`로 직접 제공한 기록만 적재할 수 있다. 해당 기록은 프로세스 종료 후 지속되지 않는다. 프로필 DB 읽기 Port도 CLI 기본 연결에는 없다. 사용자의 실제 정보는 신뢰된 입력 State 또는 서버 조회 서비스로 전달해야 한다.
 
-같은 질문으로 v13/v14의 경로를 비교하려면 다음처럼 실제 API를 실행한다. `scenario_execution`과 `intent`, `execution_plan.tasks[].scenario_id`를 확인한다.
+같은 질문으로 v14/v15의 경로 및 토큰 사용량을 비교하려면 다음처럼 실제 API를 실행한다. `scenario_execution`과 `intent`, `execution_plan.tasks[].scenario_id`를 확인한다.
 
 ```powershell
 uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과 40만원 적금은 5년 뒤 총 금액이 얼마나 차이 나?" --output result.json --state-output next_state.json
@@ -523,7 +527,9 @@ uv run python agent/supervisor/supervisor_main.py --question "30만원 적금과
 | 실행 보고서 필드 | 확인 대상 |
 |---|---|
 | `status`, `model`, `decider`, `services` | 실행 성공 여부, 실제 모델 및 서비스 연결 상태 |
-| `llm_calls`, `llm_usage` | API 호출 횟수 및 반환된 토큰 사용량 |
+| `llm_calls`, `llm_usage` | API 호출 횟수 및 호출별 실제 토큰 사용량(응답에 있는 경우 캐시 입력·추론 토큰 포함) |
+| `llm_usage_totals` | 모든 호출에서 확인 가능한 토큰 사용량의 합계 |
+| `llm_input_sizes` | 프롬프트·Context·함수 스키마의 호출별 UTF-8 크기(바이트, 토큰 아님) |
 | `main_state_input` | 입력 State |
 | `node_trace` | 초기 기억, 구조화 판단, 도구 반환, 계획 및 검증 결과의 실행 순서 |
 | `supervisor_return.next_node` | 다음 상위 그래프 노드 |
@@ -580,7 +586,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 `--regression`은 실제 모델의 판단 정답을 재생하는 테스트가 아니다. HTTP 전송 경계, DAG, 내부 State 격리, Memory 계약·권한·재사용과 실제 팀 MVP 연결을 검사한다. 기존 `--case`, `--all`, `--simulate-dispatch` 방식의 고정 테스트는 v12에서 제거되었다.
 
-이 버전의 오프라인 계약 검사는 19개이다. 추가 검사에서는 누락 ID 자동 생성/명시 ID 보존, 중복·잘못된 ID 반려, 누락 ID 요청 후 불필요한 재호출 없는 독립 Product/Fund 계획, 공통 조회 사용 범위, 공통 Fund 금지를 확인한다. 기존 HTTP 및 Memory 계약 검사 외에 필수 intent, 동일/상이한 분기 DAG와 공통 작업, 미배정 분기 및 교차 의존 거부, 가상 납입 조건 검증, 반려 후 재제출 및 내부 State 격리, 선택적 부모 LangGraph `Command` 이동을 검사한다. 단위 검사용 제어된 결정과 HTTP 응답은 실제 기본 실행에 사용하지 않는다. 제작 환경에서 실제 API 키 없이 모델의 판단 정확도는 검증할 수 없다. 팀원 모듈·LangGraph 설치 여부에 따라 선택 검사 결과가 달라진다. 최종 제작 검증 결과는 ZIP의 README에 기록했다.
+이 버전의 오프라인 계약 검사는 기존 19개와 신규 6개를 합쳐 25개이다(22개 통과, 환경 의존 선택 검사 3개 미실행). 추가 검사에서는 누락 ID 자동 생성/명시 ID 보존, 중복·잘못된 ID 반려, 누락 ID 요청 후 불필요한 재호출 없는 독립 Product/Fund 계획, 공통 조회 사용 범위, 공통 Fund 금지를 확인한다. 기존 HTTP 및 Memory 계약 검사 외에 필수 intent, 동일/상이한 분기 DAG와 공통 작업, 미배정 분기 및 교차 의존 거부, 가상 납입 조건 검증, 반려 후 재제출 및 내부 State 격리, 선택적 부모 LangGraph `Command` 이동을 검사한다. 신규 검사는 동시 제출 한 번의 API 전송 계약, ID 자동 생성·오류 복구, 미확인 계약 참조 차단, 추가 Memory 조회 왕복 유지, Context 경량화와 권한 거부, 상세 기억 중복 제거를 포함한다. 단위 검사용 제어된 결정과 HTTP 응답은 실제 기본 실행에 사용하지 않는다. 제작 환경에서 실제 API 키 없이 모델의 판단 정확도는 검증할 수 없다. 팀원 모듈·LangGraph 설치 여부에 따라 선택 검사 결과가 달라진다. 최종 제작 검증 결과는 ZIP의 README에 기록했다.
 
 실제 모델 평가에는 `--question`, 필요시 `--state-file`을 사용한다. 결과를 아래 기준으로 검토한다.
 
@@ -597,15 +603,31 @@ uv run python agent/supervisor/supervisor_main.py --regression
 | 과거 상담·선호 관련 질문 | 조회된 실제 기억 활용, 미발견 기억·과거 금리의 임의 확정 금지 |
 | 기존 결과 검증 반려 | 현재 run과 검증 결과에 맞는 재계획, 상한 초과 방지 |
 
-### 9.3 현재 범위 및 후속 과제
+### 9.3 토큰 최적화 검토 방법
 
-| 항목 | v14 기준 상태 |
+프롬프트는 의미 판단 규칙, 스키마는 형식, Python은 구조 및 안전 검증, 개발 문서는 상세 설계·예시로 책임을 나눈다. 모든 전문 Agent의 업무 절차나 긴 objective 예시를 시스템 프롬프트로 다시 옮기지 않는다. 실제 판단 품질은 간소화 전후 같은 질문·State·모델을 사용해 비교한다. 명시 저장, 가상값 격리, 시나리오 coverage, 필수 조회, 동일한 비교 기준이 누락되지 않는지를 함께 검토한다.
+
+동일한 2분기 적금 비교 제어 입력으로 검사한 결과는 다음과 같다. 모델은 호출하지 않았다.
+
+| 측정 항목 | v14 | v15 |
+|---|---:|---:|
+| 시스템 프롬프트 UTF-8 크기 | 16,533 B | 7,540 B |
+| 함수 스키마 직렬화 크기 | 4,767 B | 4,225 B |
+| 최초 Context 직렬화 크기 | 1,483 B | 810 B |
+| 검사 경로 LLM 요청 횟수 | 2 | 1 |
+| 전체 호출의 입력 구성요소 합계 | 46,582 B | 12,575 B |
+
+위 수치는 토큰 실측값이 아니다. 호출별 프롬프트·스키마·Context의 직렬화 크기를 합산한 것으로, API 내부 오버헤드, 출력/추론 토큰, 캐싱은 포함하지 않는다. 실제 API에서 `llm_usage`, `llm_usage_totals`를 확인하고 전문 Agent의 비용은 별도로 측정한다. 추가 조회나 반려가 있는 경우에는 여전히 여러 번 호출할 수 있다.
+
+### 9.4 현재 범위 및 후속 과제
+
+| 항목 | v15 기준 상태 |
 |---|---|
 | Supervisor 내부 LangGraph, API 호출 코드 및 전체 DAG 반환 | 구현 |
 | 시나리오별 독립 DAG, 공통 작업 예외 및 필수 intent 검증 | 구현 (실제 모델 판단 검증 필요) |
 | 분기별 결과 정렬·차이 계산·최종 비교 | 상위 비교 준비/Final Advice 범위, 미구현 |
 | 실제 Profile / Memory MVP 연결 인터페이스 | 구현, 팀원 모듈 설치·서비스 연결 필요 |
-| 영속 Profile / Memory DB, 승인 저장, 실제 계약 스냅샷 | 별도 서비스 연동 필요 |
+| 영속 Profile / Memory DB, 승인 저장, 실제 계약 스냅샷 | 팀 서비스와 별도 연동 필요. main의 Memory PostgreSQL 구현은 변경하지 않으며 CLI는 기존 로컬 MVP를 사용 |
 | 전체 전문 Agent 자동 실행 및 검증 | 상위 Dispatcher / Collector / Evidence / Reflection 범위 |
 | 모든 활성 사용자 선호의 확실한 조회 | Memory 서비스 확장 필요 |
 | 변경된 작업만 선별 재실행 | 후속 최적화 |

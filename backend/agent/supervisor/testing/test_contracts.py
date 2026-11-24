@@ -290,6 +290,152 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(original, source)
         self.assertTrue(any(e["node"] == "plan" and "scenario_execution" in e["output"] for e in trace))
 
+    def _combined_decision(self):
+        # API 출력 계약 검사에만 사용되는 분기 초안이다.
+        draft = self._scenario_inputs()
+        draft["scenarios"] = draft["scenarios"][:2]
+        tasks = []
+        for branch in draft["scenarios"]:
+            sid = branch["id"]
+            tasks.extend([
+                {"task_id": f"product_{sid}", "agent": "product", "scenario_id": sid, "objective": "해당 조건의 적금 후보와 금리 조사", "depends_on": []},
+                {"task_id": f"fund_{sid}", "agent": "fund", "scenario_id": sid, "objective": "선행 상품 조건으로 36개월 원금·이자 산출", "depends_on": [f"product_{sid}"]},
+            ])
+        return {"kind": "submit_plan", "reason": "납입 전략별 독립 분석",
+                "intent": {"purpose": "납입 전략 비교", "operation": "compare", "analysis_mode": "strategy_compare", "supplied_values": {}, "profile_update_status": "not_needed"},
+                "scenario_state": draft, "execution_plan": {"tasks": tasks}}
+
+    def test_combined_scenario_plan_one_http_call(self):
+        decision = self._combined_decision()
+        raw = {"status": "completed", "output": [{"type": "function_call", "name": "supervisor_decision", "arguments": json.dumps(decision)}],
+               "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "input_tokens_details": {"cached_tokens": 2}, "output_tokens_details": {"reasoning_tokens": 1}}}
+        def response(req, timeout):
+            payload = json.loads(req.data)
+            self.assertIn("scenario_state", payload["tools"][0]["parameters"]["properties"])
+            self.assertEqual(json.loads(payload["input"])["main_state"]["messages"][-1]["content"], "월 30만 원과 40만 원 적금 비교")
+            return BytesIO(json.dumps(raw).encode())
+        source = {"messages": [{"type": "human", "content": "월 30만 원과 40만 원 적금 비교"}], "turn_id": "t1", "consultation_id": "c1", "scenario_state": None, "intent": None, "financial_profile": {"monthly_net_income_krw": 3200000}}
+        before, trace = deepcopy(source), []
+        with patch("agent.supervisor.llm.openai_api.urlopen", side_effect=response) as post:
+            decider = OpenAIDecider("unit-test-key", "unit-test-model")
+            outcome = Supervisor(decide=decider, trace_sink=trace.append).run(source, use_graph=False)
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(decider.calls, 1)
+        self.assertEqual(outcome.tool_calls, 0)
+        self.assertEqual(decider.usage[0]["cached_input_tokens"], 2)
+        self.assertEqual(decider.usage[0]["reasoning_tokens"], 1)
+        self.assertGreater(decider.input_sizes[0]["schema_bytes"], 0)
+        self.assertEqual(outcome.next_node, "plan_validator")
+        self.assertEqual(execution_waves(outcome.update["execution_plan"], outcome.update["scenario_state"]), [["product_s_a", "product_s_b"], ["fund_s_a", "fund_s_b"]])
+        self.assertEqual([e["node"] for e in trace], ["initial_memory", "reason", "plan", "finalize", "return"])
+        self.assertEqual(source, before)
+        self.assertNotIn("financial_profile", outcome.update)
+        self.assertTrue(all(b["assumptions"]["holding_actions"][0]["status"] == "hypothetical" for b in outcome.update["scenario_state"]["scenarios"]))
+
+    def test_combined_scenario_ids_and_repair(self):
+        decision = self._combined_decision()
+        for i, branch in enumerate(decision["scenario_state"]["scenarios"], 1):
+            old = branch.pop("id")
+            for task in decision["execution_plan"]["tasks"]:
+                if task["scenario_id"] == old:
+                    task["scenario_id"] = f"s_{i:02d}"
+        outcome = Supervisor(decide=lambda _: deepcopy(decision)).run({}, use_graph=False)
+        self.assertEqual([s["id"] for s in outcome.update["scenario_state"]["scenarios"]], ["s_01", "s_02"])
+        bad = deepcopy(decision)
+        bad["execution_plan"]["tasks"][0]["scenario_id"] = "unknown"
+        calls = []
+        def repair(context):
+            calls.append(context)
+            return deepcopy(bad if len(calls) == 1 else decision)
+        fixed = Supervisor(decide=repair).run({}, use_graph=False)
+        self.assertEqual(fixed.next_node, "plan_validator")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[1]["issues"])
+        self.assertEqual(fixed.tool_calls, 0)
+
+    def test_combined_scenario_baseline_cannot_bypass_verification(self):
+        from ..tools.scenarios import prepare_verified_scenarios
+        args = self._scenario_inputs()
+        args["baseline_ref"] = "verified_snapshot"
+        args["scenarios"][0]["assumptions"]["holding_actions"] = [{"action": "keep", "holding_ref": "holding_a"}]
+        with self.assertRaisesRegex(SupervisorContractError, "Unverified baseline_ref"):
+            prepare_verified_scenarios(args, {"source": {}, "observations": []})
+        verified = {"source": {}, "observations": [{"name": "profile_agent", "request": {"operation": "inspect"}, "result": {"baseline_ref": "verified_snapshot", "profile": {"financial_profile": {"holdings": [{"holding_id": "holding_a", "status": "active"}]}}}}]}
+        self.assertEqual(prepare_verified_scenarios(args, verified)["scenario_state"]["baseline_ref"], "verified_snapshot")
+        bad = deepcopy(args)
+        bad["scenarios"][0]["assumptions"]["holding_actions"][0]["holding_ref"] = "unknown"
+        with self.assertRaisesRegex(SupervisorContractError, "holding_ref"):
+            prepare_verified_scenarios(bad, verified)
+        decision = self._combined_decision()
+        decision["scenario_state"]["baseline_ref"] = "fabricated_snapshot"
+        with self.assertRaisesRegex(SupervisorContractError, "Unverified baseline_ref"):
+            Supervisor(decide=lambda _: deepcopy(decision), max_repairs=0).run({}, use_graph=False)
+
+    def test_real_lookup_round_trip_retained(self):
+        decision = self._combined_decision()
+        seen = []
+        calls = []
+        def retrieve(request):
+            calls.append(request)
+            return {"retrieval_status": "found", "retrieved": [{"memory_id": "m1", "memory_type": "user_decision", "content": "기존 상품의 해지 조건을 확인", "source_ref": "a1"}]}
+        def decide(context):
+            seen.append(deepcopy(context))
+            if len(seen) == 1:
+                return {"kind": "call_tool", "reason": "관련 기억 확인", "tool_name": "retrieve_memory", "tool_input": {"query": "해지"}}
+            self.assertEqual(context["main_state"]["memory"]["retrieved"][0]["memory_id"], "m1")
+            self.assertNotIn("latest_memory_detail", context)
+            self.assertNotIn("retrieved", context["observations"][-1]["result"])
+            return deepcopy(decision)
+        out = Supervisor(decide=decide, ports=SupervisorPorts(retrieve_memory=retrieve)).run({}, use_graph=False)
+        self.assertEqual(out.next_node, "plan_validator")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(out.tool_calls, 1)
+
+    def test_compact_context_keeps_current_facts_and_denied_memory_out(self):
+        from ..nodes.reason import build_context
+        source = {"conversation_summary": "이전 대화 요약", "messages": [{"type": "human", "content": "최신 질문"}] + [{"type": "ai", "content": f"설명 {i}"} for i in range(8)],
+                  "financial_profile": {"monthly_net_income_krw": 0, "monthly_living_expenses_krw": None},
+                  "pending_input": [{"id": "q1", "status": "pending", "question": "필수 질문"}],
+                  "execution_plan": {"revision": 2, "tasks": [{"task_id": "fund_a", "run_id": "r2", "scenario_id": "s_a"}]},
+                  "agent_results": {"fund_a": {"run_id": "r1", "plan_revision": 1, "scenario_id": "s_a", "summary": "구 실행"}},
+                  "review_results": {"fund_a": {"target_run_id": "r2", "reflection": {"status": "revise", "issues": ["금리 전제 확인"]}}, "old": {"target_run_id": "r0"}}}
+        request = self._scenario_inputs()
+        prepared = prepare_scenarios(request)
+        memory_item = {"memory_id": "m1", "memory_type": "user_preference", "content": "denied-sensitive-content", "source_ref": "a1"}
+        observations = [{"name": "prepare_scenarios", "request": request, "result": prepared},
+                        {"name": "retrieve_memory", "request": {"query": "선호"}, "result": {"retrieval_status": "found", "retrieved": [memory_item]}},
+                        {"name": "retrieve_memory", "request": {"query": "다른 선호"}, "result": {"retrieval_status": "access_denied", "retrieved": []}}]
+        state = {"source": source, "observations": observations, "issues": ["계획 수정"]}
+        before = deepcopy(state)
+        context = build_context(Supervisor(decide=lambda _: {}), state, 2)
+        self.assertEqual(context["main_state"]["messages"][0]["content"], "최신 질문")
+        self.assertEqual(len(context["main_state"]["messages"]), 5)
+        self.assertEqual(context["main_state"]["pending_input"], source["pending_input"])
+        self.assertNotIn("agent_results", context["main_state"])
+        self.assertEqual(list(context["main_state"]["review_results"]), ["fund_a"])
+        self.assertEqual(context["issues"], ["계획 수정"])
+        avail = context["profile_availability"]["financial_profile"]
+        self.assertIn("monthly_net_income_krw", avail["available"])
+        self.assertIn("monthly_living_expenses_krw", avail["unknown"])
+        self.assertIn("total_assets_krw", avail["not_loaded"])
+        self.assertNotIn("request", context["observations"][0])
+        self.assertEqual(context["observations"][0]["result"], prepared)
+        self.assertNotIn("denied-sensitive-content", json.dumps(context))
+        self.assertEqual(state, before)
+
+    def test_latest_memory_overflow_only_once(self):
+        from ..nodes.reason import build_context
+        records = [{"memory_id": f"m{i}", "memory_type": "user_preference", "content": f"선호 {i}", "source_ref": f"a{i}"} for i in range(12)]
+        state = {"source": {}, "observations": [{"name": "retrieve_memory", "request": {"query": "선호"}, "result": {"retrieval_status": "found", "retrieved": records}}]}
+        context = build_context(Supervisor(decide=lambda _: {}), state, 2)
+        merged = context["main_state"]["memory"]["retrieved"]
+        extra = context["latest_memory_detail"]["retrieved"]
+        self.assertEqual(len(merged), 10)
+        self.assertEqual(len(extra), 2)
+        self.assertEqual({i["memory_id"] for i in merged + extra}, {i["memory_id"] for i in records})
+        self.assertTrue(set(i["memory_id"] for i in merged).isdisjoint(i["memory_id"] for i in extra))
+
     def test_parent_graph_command_if_installed(self):
         # LangGraph 설치 환경에서 실제 내부 Graph + 부모 Command 이동만 검사한다.
         try:

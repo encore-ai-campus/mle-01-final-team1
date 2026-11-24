@@ -9,6 +9,7 @@ from ..contracts import (
 )
 from ..tools.profile_fields import validate_overlay, merge_goals, source_with_reads
 from ..tools.memory import merge_memory
+from ..tools.scenarios import prepare_scenarios, prepare_verified_scenarios
 if TYPE_CHECKING:
     from ..supervisor_main import Supervisor
 
@@ -77,8 +78,11 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
         scenario_result = last_result(state.get("observations", []), "prepare_scenarios")
         scenario = scenario_result["scenario_state"] if scenario_result else src.get("scenario_state")
         previous_scenario = src.get("scenario_state")
-        if scenario is not None:
-            from ..tools.scenarios import prepare_scenarios
+        # 새 사실을 얻지 않는 정규화는 Plan에서 바로 실행한다.
+        # 별도 Tool 경로와 동일한 baseline/holding 출처 검사로 우회 제출을 차단한다.
+        if "scenario_state" in decision:
+            scenario = prepare_verified_scenarios(decision["scenario_state"], state)["scenario_state"]
+        elif scenario is not None:
             scenario = prepare_scenarios(scenario)["scenario_state"]
         scenario_changed = scenario != previous_scenario
         intent = merged_intent(src, decision)
@@ -98,7 +102,7 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
         )
         validate_plan(plan, scenario)
         patch: dict[str, Any] = {"phase": "planning", "execution_plan": plan, "intent": intent}
-        if scenario_result is not None or scenario_changed:
+        if "scenario_state" in decision or scenario_result is not None or scenario_changed:
             patch["scenario_state"] = scenario
         attach_memory(src, state.get("observations", []), patch)
         return {"candidate_patch": patch, "candidate_error": None}
