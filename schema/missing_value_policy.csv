@@ -1,0 +1,43 @@
+dataset,standard_field,source_field,missing_status,default_value,service_action,notes
+youth_policy,income_condition_note,earnEtcCn,not_provided,null,소득조건 추가 설명 미제공으로 표시,기본 소득 코드와 본문을 함께 확인
+youth_policy,reference_url_2,refUrlAddr2,not_provided,null,보조 참고 URL 미제공으로 표시,URL을 임의 생성하지 않음
+youth_policy,additional_note,etcMttrCn,not_provided,null,기타 안내사항 미제공으로 표시,정책 설명과 혼동하지 않음
+youth_policy,participation_target,ptcpPrpTrgtCn,not_provided,null,참여 대상 추가 설명 미제공으로 표시,기본 대상 조건을 별도 확인
+youth_policy,operating_contact_name,operInstPicNm,not_provided,null,운영기관 담당자 미제공으로 표시,기관명과 담당자명을 혼동하지 않음
+youth_policy,screening_method,srngMthdCn,not_provided,null,심사방법 미제공으로 표시,심사방법을 자동 추정하지 않음
+youth_policy,submission_document,sbmsnDcmntCn,not_provided,null,제출서류 미제공으로 표시,신청 전 기관 확인 필요
+youth_policy,application_url,aplyUrlAddr,not_provided,null,온라인 신청 URL 미제공으로 표시,공식 URL을 임의 생성하지 않음
+youth_policy,additional_application_condition,addAplyQlfcCndCn,unknown,null,추가 신청자격 확인 필요,정책 본문과 원문 조건을 함께 확인
+youth_policy,operating_institution_id,operInstCd,not_provided,null,운영기관 코드 미제공으로 표시,등록기관 정보로 대체하지 않음
+youth_policy,operating_institution,operInstCdNm,not_provided,null,운영기관명 미제공으로 표시,주관기관과 동일하다고 가정하지 않음
+youth_policy,business_period_note,bizPrdEtcCn,not_provided,null,사업기간 추가 설명 미제공으로 표시,상시사업 여부를 자동 확정하지 않음
+youth_policy,application_period,aplyYmd,unknown,null,신청기간 확인 필요,기간 문자열은 시작·종료일을 파싱하고 불명확하면 원문 유지
+youth_policy,supervising_contact_name,sprvsnInstPicNm,not_provided,null,주관기관 담당자 미제공으로 표시,기관 대표 연락처로 대체하지 않음
+youth_policy,application_method,plcyAplyMthdCn,not_provided,null,신청방법 미제공으로 표시,온라인 신청 가능 여부를 추정하지 않음
+youth_policy,business_start_date,bizPrdBgngYmd,unknown,null,사업 시작일 확인 필요,상시사업 여부를 자동 확정하지 않음
+youth_policy,business_end_date,bizPrdEndYmd,unknown,null,사업 종료일 확인 필요,종료일 미제공과 계속 운영을 구분하지 않음
+youth_policy,reference_url_1,refUrlAddr1,not_provided,null,대표 참고 URL 미제공으로 표시,공식 URL을 임의 생성하지 않음
+youth_policy,registration_parent_institution,rgtrUpInstCdNm,not_provided,null,상위 등록기관 미제공으로 표시,등록기관과 동일하다고 가정하지 않음
+youth_policy,registration_highest_institution,rgtrHghrkInstCdNm,not_provided,null,최상위 등록기관 미제공으로 표시,기관 계층을 임의 추정하지 않음
+youth_policy,registration_highest_institution_id,rgtrHghrkInstCd,not_provided,null,최상위 등록기관 코드 미제공으로 표시,코드로 기관명을 추정하지 않음
+youth_policy,registration_parent_institution_id,rgtrUpInstCd,not_provided,null,상위 등록기관 코드 미제공으로 표시,코드로 기관명을 추정하지 않음
+youth_policy,support_arrival_sequence_flag,sprtArvlSeqYn,unknown,null,선착순 여부 확인 필요,값이 없으면 선착순으로 판단하지 않음
+youth_policy,min_income,earnMinAmt,unknown,null,소득조건 확인 필요,0으로 대체하지 않음
+youth_policy,support_scale_count,sprtSclCnt,not_provided,null,지원 규모 미제공으로 표시,0으로 대체하지 않음
+youth_policy,max_income,earnMaxAmt,unknown,null,소득조건 확인 필요,0으로 대체하지 않음
+youth_policy,school_code,schoolCd,not_provided,null,학력 조건 미제공으로 표시,학력 제한 없음으로 단정하지 않음
+youth_policy,max_age,sprtTrgtMaxAge,unknown,null,최대연령 조건 확인 필요,999는 연령 제한 없음으로 별도 처리
+youth_policy,min_age,sprtTrgtMinAge,unknown,null,최소연령 조건 확인 필요,연령 제한 없음으로 단정하지 않음
+youth_policy,supervising_institution_id,sprvsnInstCd,not_provided,null,주관기관 코드 미제공으로 표시,등록기관 코드로 대체하지 않음
+youth_policy,income_condition_code,earnCndSeCd,unknown,null,소득조건 코드 확인 필요,코드 사전 매핑 전에는 의미 확정 금지
+youth_policy,marital_status_code,mrgSttsCd,unknown,null,혼인상태 조건 확인 필요,코드 사전 매핑 전에는 의미 확정 금지
+youth_policy,policy_keyword,plcyKywdNm,not_provided,null,정책 키워드 미제공으로 표시,키워드가 없다고 정책 분류에서 제외하지 않음
+youth_policy,large_category,lclsfNm,not_provided,null,대분류 미제공으로 표시,정책명과 본문으로 임의 분류하지 않음
+youth_policy,middle_category,mclsfNm,not_provided,null,중분류 미제공으로 표시,대분류로 중분류를 추정하지 않음
+loan,disclosure_end_date,dcls_end_day,not_provided,null,공시 종료일 미제공으로 표시,계속 공시 중이라고 확정하지 않음
+loan,average_rate,lend_rate_avg,not_provided,null,평균금리 비교에서 제외,최저·최고금리와 별도 기준으로 관리
+savings,disclosure_end_date,dcls_end_day,not_provided,null,공시 종료일 미제공으로 표시,계속 공시 중이라고 확정하지 않음
+savings,max_limit,max_limit,unknown,null,가입한도 확인 필요,0원 또는 제한 없음으로 대체하지 않음
+savings,join_method,join_way,not_provided,null,가입방법 확인 필요,가입방법을 임의 추정하지 않음
+deposit,disclosure_end_date,dcls_end_day,not_provided,null,공시 종료일 미제공으로 표시,계속 공시 중이라고 확정하지 않음
+deposit,max_limit,max_limit,unknown,null,가입한도 확인 필요,0원 또는 제한 없음으로 대체하지 않음

@@ -1,0 +1,297 @@
+{
+  "assessment_type": "baseline",
+  "assessed_at": "2026-11-24T14:29:59+09:00",
+  "status_vocabulary": {
+    "pass": "기준 충족",
+    "warning": "주의해서 사용",
+    "fail": "수정 전 사용 제한",
+    "unknown": "추가 확인 필요"
+  },
+  "datasets": {
+    "youth_policy": {
+      "status": "conditional",
+      "rule_count": 4,
+      "status_counts": {
+        "pass": 3,
+        "unknown": 1
+      },
+      "dimensions": {
+        "uniqueness": "usable",
+        "validity": "usable",
+        "traceability": "conditional"
+      }
+    },
+    "loan": {
+      "status": "conditional",
+      "rule_count": 4,
+      "status_counts": {
+        "pass": 2,
+        "warning": 2
+      },
+      "dimensions": {
+        "uniqueness": "usable",
+        "validity": "conditional",
+        "completeness": "conditional"
+      }
+    },
+    "savings": {
+      "status": "conditional",
+      "rule_count": 4,
+      "status_counts": {
+        "pass": 2,
+        "warning": 2
+      },
+      "dimensions": {
+        "uniqueness": "usable",
+        "validity": "usable",
+        "completeness": "conditional"
+      }
+    },
+    "deposit": {
+      "status": "conditional",
+      "rule_count": 4,
+      "status_counts": {
+        "pass": 2,
+        "warning": 2
+      },
+      "dimensions": {
+        "uniqueness": "usable",
+        "validity": "usable",
+        "completeness": "conditional"
+      }
+    },
+    "all": {
+      "status": "conditional",
+      "rule_count": 1,
+      "status_counts": {
+        "unknown": 1
+      },
+      "dimensions": {
+        "traceability": "conditional"
+      }
+    }
+  },
+  "rules": [
+    {
+      "rule_id": "DQ-YOUTH-001",
+      "dataset": "youth_policy",
+      "quality_dimension": "uniqueness",
+      "field": "ID",
+      "rule_description": "고유 ID 중복 여부",
+      "severity": "high",
+      "current_result": 0,
+      "denominator": 4018,
+      "status": "pass",
+      "service_impact": "상품·정책 식별 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-LOAN-001",
+      "dataset": "loan",
+      "quality_dimension": "uniqueness",
+      "field": "ID",
+      "rule_description": "고유 ID 중복 여부",
+      "severity": "high",
+      "current_result": 0,
+      "denominator": 58,
+      "status": "pass",
+      "service_impact": "상품·정책 식별 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-SAVINGS-001",
+      "dataset": "savings",
+      "quality_dimension": "uniqueness",
+      "field": "ID",
+      "rule_description": "고유 ID 중복 여부",
+      "severity": "high",
+      "current_result": 0,
+      "denominator": 338,
+      "status": "pass",
+      "service_impact": "상품·정책 식별 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-DEPOSIT-001",
+      "dataset": "deposit",
+      "quality_dimension": "uniqueness",
+      "field": "ID",
+      "rule_description": "고유 ID 중복 여부",
+      "severity": "high",
+      "current_result": 0,
+      "denominator": 434,
+      "status": "pass",
+      "service_impact": "상품·정책 식별 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-YOUTH_POLICY-CONV",
+      "dataset": "youth_policy",
+      "quality_dimension": "validity",
+      "field": "형 변환 필드",
+      "rule_description": "숫자·날짜 변환 실패 건수",
+      "severity": "medium",
+      "current_result": 0,
+      "denominator": 4018,
+      "status": "pass",
+      "service_impact": "계산 필드 사용 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-LOAN-CONV",
+      "dataset": "loan",
+      "quality_dimension": "validity",
+      "field": "형 변환 필드",
+      "rule_description": "숫자·날짜 변환 실패 건수",
+      "severity": "medium",
+      "current_result": 0,
+      "denominator": 58,
+      "status": "pass",
+      "service_impact": "계산 필드 사용 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-SAVINGS-CONV",
+      "dataset": "savings",
+      "quality_dimension": "validity",
+      "field": "형 변환 필드",
+      "rule_description": "숫자·날짜 변환 실패 건수",
+      "severity": "medium",
+      "current_result": 0,
+      "denominator": 338,
+      "status": "pass",
+      "service_impact": "계산 필드 사용 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-DEPOSIT-CONV",
+      "dataset": "deposit",
+      "quality_dimension": "validity",
+      "field": "형 변환 필드",
+      "rule_description": "숫자·날짜 변환 실패 건수",
+      "severity": "medium",
+      "current_result": 0,
+      "denominator": 434,
+      "status": "pass",
+      "service_impact": "계산 필드 사용 가능",
+      "action": "추가 조치 없음"
+    },
+    {
+      "rule_id": "DQ-LOAN-RATE-001",
+      "dataset": "loan",
+      "quality_dimension": "completeness",
+      "field": "average_rate",
+      "rule_description": "평균금리 결측 건수",
+      "severity": "medium",
+      "current_result": 52,
+      "denominator": 106,
+      "status": "warning",
+      "service_impact": "평균금리 비교 제한",
+      "action": "null 유지·평균금리 기반 비교에서 제외"
+    },
+    {
+      "rule_id": "DQ-LOAN-RATE-002",
+      "dataset": "loan",
+      "quality_dimension": "validity",
+      "field": "min_rate|max_rate|average_rate",
+      "rule_description": "금리 범위 경고 건수",
+      "severity": "medium",
+      "current_result": 27,
+      "denominator": 106,
+      "status": "warning",
+      "service_impact": "금리 비교 주의",
+      "action": "원본 유지·금리 기준을 분리해 표시"
+    },
+    {
+      "rule_id": "DQ-SAVINGS-COMP-001",
+      "dataset": "savings",
+      "quality_dimension": "completeness",
+      "field": "disclosure_end_date",
+      "rule_description": "공시 종료일 결측 건수",
+      "severity": "medium",
+      "current_result": 322,
+      "denominator": 338,
+      "status": "warning",
+      "service_impact": "공시 종료 여부 확정 제한",
+      "action": "null 유지·종료일 미제공 상태 표시"
+    },
+    {
+      "rule_id": "DQ-SAVINGS-COMP-002",
+      "dataset": "savings",
+      "quality_dimension": "completeness",
+      "field": "max_limit",
+      "rule_description": "최대 가입한도 결측 건수",
+      "severity": "medium",
+      "current_result": 238,
+      "denominator": 338,
+      "status": "warning",
+      "service_impact": "가입한도 검증 제한",
+      "action": "null을 0 또는 무제한으로 해석하지 않음"
+    },
+    {
+      "rule_id": "DQ-DEPOSIT-COMP-001",
+      "dataset": "deposit",
+      "quality_dimension": "completeness",
+      "field": "disclosure_end_date",
+      "rule_description": "공시 종료일 결측 건수",
+      "severity": "medium",
+      "current_result": 423,
+      "denominator": 434,
+      "status": "warning",
+      "service_impact": "공시 종료 여부 확정 제한",
+      "action": "null 유지·종료일 미제공 상태 표시"
+    },
+    {
+      "rule_id": "DQ-DEPOSIT-COMP-002",
+      "dataset": "deposit",
+      "quality_dimension": "completeness",
+      "field": "max_limit",
+      "rule_description": "최대 가입한도 결측 건수",
+      "severity": "medium",
+      "current_result": 397,
+      "denominator": 434,
+      "status": "warning",
+      "service_impact": "가입한도 검증 제한",
+      "action": "null을 0 또는 무제한으로 해석하지 않음"
+    },
+    {
+      "rule_id": "DQ-YOUTH-COND-001",
+      "dataset": "youth_policy",
+      "quality_dimension": "validity",
+      "field": "region_code",
+      "rule_description": "지역 조건 코드의 존재 여부",
+      "severity": "medium",
+      "current_result": 0,
+      "denominator": 4018,
+      "status": "pass",
+      "service_impact": "지역 기반 추천 제한",
+      "action": "코드명 매핑 전에는 원문 코드 유지"
+    },
+    {
+      "rule_id": "DQ-YOUTH-COND-002",
+      "dataset": "youth_policy",
+      "quality_dimension": "traceability",
+      "field": "application_period",
+      "rule_description": "신청기간 시작·종료일 구조화 여부",
+      "severity": "medium",
+      "current_result": null,
+      "denominator": 4018,
+      "status": "unknown",
+      "service_impact": "신청 가능 여부 자동 판정 제한",
+      "action": "후속 단계에서 시작일·종료일 분리"
+    },
+    {
+      "rule_id": "DQ-ALL-TRACE-001",
+      "dataset": "all",
+      "quality_dimension": "traceability",
+      "field": "source_url",
+      "rule_description": "원문 출처 URL 표준 필드 확보 여부",
+      "severity": "low",
+      "current_result": null,
+      "denominator": null,
+      "status": "unknown",
+      "service_impact": "원문 재검증에 수동 확인 필요",
+      "action": "후보 필드로 검토"
+    }
+  ]
+}
