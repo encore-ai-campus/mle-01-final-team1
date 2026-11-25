@@ -68,6 +68,8 @@ def safe_error(exc: Exception) -> None:
         print(f"누락 모듈: {exc.name or '(SDK에서 이름 없이 발생: 아래 위치와 버전 확인)'}", file=sys.stderr)
         print("backend에서 uv sync --locked 실행 후 동일 Python으로 재실행하세요.", file=sys.stderr)
         print(json.dumps(environment_info(), ensure_ascii=False, indent=2), file=sys.stderr)
+    elif type(exc).__name__ == "SupervisorContractError":
+        print(diagnostic_text(exc), file=sys.stderr)
     elif type(exc).__name__ == "OpenAIConnectionError":
         # 기존 Supervisor가 정제한 오류만 출력한다.
         print(str(exc), file=sys.stderr)
@@ -80,6 +82,11 @@ def safe_error(exc: Exception) -> None:
         except (ValueError, OSError):
             name = file.name
         print(f"  {name}:{frame.lineno} ({frame.name})", file=sys.stderr)
+
+
+def diagnostic_text(value: Any) -> str:
+    # Local developer diagnostics: never print the full LLM output or exception traceback contents.
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in str(value)).split())[:500]
 
 
 def show_update(namespace: tuple, updates: dict[str, Any], emit: Callable[[str], None]) -> None:
@@ -97,6 +104,15 @@ def show_update(namespace: tuple, updates: dict[str, Any], emit: Callable[[str],
             kind = decision.get("kind", "unknown")
             tool = decision.get("tool_name")
             emit(f"       decision: {kind}" + (f" / {tool}" if tool else ""))
+            if kind == "invalid" and decision.get("reason"):
+                emit(f"       reason: {diagnostic_text(decision['reason'])}")
+        if patch.get("candidate_error"):
+            emit(f"       plan error: {diagnostic_text(patch['candidate_error'])}")
+        if patch.get("retry"):
+            emit("       retry: true")
+            issues = patch.get("issues") or []
+            if issues:
+                emit(f"       issue: {diagnostic_text(issues[-1])}")
         if patch.get("next_node"):
             emit(f"       next: {patch['next_node']}")
         if namespace:
@@ -111,6 +127,9 @@ def show_update(namespace: tuple, updates: dict[str, Any], emit: Callable[[str],
         if node == "dispatcher" and report.get("waves"):
             for item in report["waves"][-1]:
                 emit(f"       {item['task_id']}: {item['action']}")
+        if node in {"replan_execution", "replan_review"} and report.get("replans"):
+            replan = report["replans"][-1]
+            emit(f"       replan: {replan['reason']} / {', '.join(replan['task_ids'])}")
         stages = report.get("stages") or []
         if stages:
             stage = stages[-1]
@@ -148,6 +167,7 @@ def result_view(result: dict[str, Any], elapsed: float, *, langfuse_enabled: boo
         "langfuse_configured": langfuse_enabled,
         "consultation_id": result.get("consultation_id"),
         "turn_id": result.get("turn_id"),
+        "intent": result.get("intent"),
         "execution_plan": result.get("execution_plan"),
         "scenario_state": result.get("scenario_state"),
         "pending_input": result.get("pending_input", []),

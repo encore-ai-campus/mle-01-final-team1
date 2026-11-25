@@ -4,6 +4,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
+from agent.supervisor.candidate_budget import SEARCH_AGENTS, validate_candidate_output
+from agent.supervisor.contracts import SupervisorContractError
+
 
 TERMINAL_BLOCKERS = frozenset({"failed", "skipped"})
 RESULT_STATUSES = frozenset({"completed", "needs_input", "failed"})
@@ -11,7 +14,7 @@ IDENTITY_KEYS = ("task_id", "run_id", "plan_revision", "scenario_id")
 
 
 def new_report() -> dict[str, Any]:
-    return {"mode": "connection_check", "status": "running", "stages": [], "tasks": {}, "waves": []}
+    return {"mode": "connection_check", "status": "running", "stages": [], "tasks": {}, "waves": [], "replans": []}
 
 
 def record_stage(state: Mapping[str, Any], name: str, status: str, reason: str | None = None) -> dict[str, Any]:
@@ -41,6 +44,104 @@ def is_current_result(result: Any, task: Mapping[str, Any], revision: int) -> bo
     )
 
 
+def candidate_issue(task: Mapping[str, Any], result: dict) -> str | None:
+    """Reuse the Supervisor-owned search-result contract; no candidate truncation."""
+    if task.get("agent") not in SEARCH_AGENTS:
+        return None
+    try:
+        validate_candidate_output(dict(task), result)
+    except SupervisorContractError as exc:
+        return str(exc)
+    return None
+
+
+def required_upstream(plan: dict, results: dict, task: Mapping[str, Any]) -> dict[str, Any]:
+    """Only accepted, current, completed direct dependencies may cross the boundary."""
+    by_id = {t["task_id"]: t for t in plan["tasks"]}
+    accepted = {}
+    for dep_id in task["depends_on"]:
+        dep = by_id[dep_id]
+        result = results.get(dep_id)
+        if (dep.get("scenario_id") is not None and dep.get("scenario_id") != task.get("scenario_id")
+                or dep["status"] != "completed"
+                or not is_current_result(result, dep, plan["revision"])
+                or result["status"] != "completed"
+                or candidate_issue(dep, result) is not None):
+            raise SupervisorContractError("Required upstream result is missing, stale, or invalid: " + dep_id)
+        accepted[dep_id] = deepcopy(result)
+    return accepted
+
+
+def resolved_task_answers(state: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+    """The server already validates answers; select this task's resolved questions only."""
+    return {q["id"]: deepcopy(q["answers"])
+            for q in state.get("pending_input") or []
+            if isinstance(q, dict) and q.get("status") == "resolved"
+            and q.get("target") == task["task_id"] and q.get("scenario_id") == task.get("scenario_id")
+            and isinstance(q.get("id"), str) and isinstance(q.get("answers"), dict)
+            and q["answers"]}
+
+
+def review_issues(review: Any, run_id: Any) -> list[str]:
+    if not isinstance(run_id, str) or not run_id or not isinstance(review, dict) or review.get("target_run_id") != run_id:
+        return []
+    issues = []
+    for name in ("evidence", "reflection"):
+        check = review.get(name)
+        if not isinstance(check, dict) or check.get("status") != "revise":
+            continue
+        details = check.get("issues")
+        strings = [v for v in details if isinstance(v, str) and v.strip()] if isinstance(details, list) else []
+        issues.extend(strings or [name + ": revise"])
+    return issues
+
+
+def archive_review_feedback(old_results: dict, old_reviews: dict, current: dict,
+                            previous: dict) -> dict:
+    """Keep only metadata of invalidated reviewed runs, never copy their data."""
+    archived = deepcopy(previous)
+    for tid, output in old_results.items():
+        if not isinstance(output, dict) or output.get("task_id") != tid:
+            continue
+        run_id = output.get("run_id")
+        if tid in current and current[tid].get("run_id") == run_id:
+            continue
+        issues = review_issues(old_reviews.get(tid), run_id)
+        if issues and type(output.get("plan_revision")) is int:
+            archived[run_id] = {"task_id": tid, "scenario_id": output.get("scenario_id"),
+                                "plan_revision": output["plan_revision"], "issues": issues}
+    return archived
+
+
+def revision_feedback(state: Mapping[str, Any], task: Mapping[str, Any]) -> dict | None:
+    revision = state["execution_plan"]["revision"]
+    records = [(run_id, record) for run_id, record in (state.get("superseded_results") or {}).items()
+               if isinstance(record, dict) and record.get("task_id") == task["task_id"]
+               and record.get("scenario_id") == task.get("scenario_id")
+               and type(record.get("plan_revision")) is int and record["plan_revision"] in {revision, revision - 1}
+               and isinstance(record.get("issues"), list) and record["issues"]]
+    if not records:
+        return None
+    run_id, record = max(records, key=lambda pair: pair[1]["plan_revision"])
+    return {"previous_run_id": run_id, "issues": deepcopy(record["issues"])}
+
+
+def work_replan_tasks(state: Mapping[str, Any]) -> list[str]:
+    """Skipped, unregistered tasks must not cause additional LLM calls."""
+    return [t["task_id"] for t in (state.get("execution_plan") or {}).get("tasks", [])
+            if t.get("status") in {"failed", "needs_input"} and t.get("run_id")]
+
+
+def review_replan_tasks(state: Mapping[str, Any]) -> list[str]:
+    plan = state.get("execution_plan") or {}
+    results, reviews = state.get("agent_results") or {}, state.get("review_results") or {}
+    return [t["task_id"] for t in plan.get("tasks", [])
+            if t.get("status") == "completed"
+            and is_current_result(results.get(t["task_id"]), t, plan["revision"])
+            and results[t["task_id"]]["status"] == "completed"
+            and review_issues(reviews.get(t["task_id"]), t.get("run_id"))]
+
+
 def normalize_current(plan: dict, results: dict, reviews: dict) -> tuple[dict, dict, dict]:
     """이전 revision/run 결과를 현재 작업의 성공 근거로 사용하지 않는다."""
     plan = deepcopy(plan)
@@ -50,7 +151,8 @@ def normalize_current(plan: dict, results: dict, reviews: dict) -> tuple[dict, d
         tid = task["task_id"]
         result = results.get(tid)
         if (task["status"] in RESULT_STATUSES and is_current_result(result, task, plan["revision"])
-                and result["status"] == task["status"]):
+                and result["status"] == task["status"]
+                and candidate_issue(task, result) is None):
             current[tid] = deepcopy(result)
             review = reviews.get(tid)
             if task["status"] == "completed" and isinstance(review, dict) and review.get("target_run_id") == task["run_id"]:
@@ -107,12 +209,24 @@ def collect_results(plan: dict, previous: dict, outbox: list, report: dict) -> t
             report["tasks"][tid] = {"status": "failed", "reason": "missing_or_duplicate_current_result"}
             continue
         result = deepcopy(matches[0])
+        issue = candidate_issue(task, result)
+        if issue is not None:
+            # A failed envelope communicates the real contract rejection, not a search result.
+            result = failed_output(result, "CANDIDATE_CONTRACT_VIOLATION")
+            result["warnings"].append(issue)
+            results[tid] = result
+            task["status"] = "failed"
+            report["tasks"][tid] = {"status": "failed", "run_id": task["run_id"],
+                                    "reason": "candidate_contract_violation", "issue": issue}
+            continue
         results[tid] = result
         task["status"] = result["status"]
         diagnostic = {"status": result["status"], "run_id": result["run_id"]}
         if result["status"] == "needs_input":
             diagnostic["needed_fields"] = result["needed_fields"]
         if result["status"] == "failed":
-            diagnostic["reason"] = "agent_execution_failed"
+            diagnostic["reason"] = ("adapter_prepare_failed" if any(
+                w.startswith("ADAPTER_PREPARE_ERROR:") for w in result["warnings"])
+                else "agent_execution_failed")
         report["tasks"][tid] = diagnostic
     return plan, results, report

@@ -1,11 +1,11 @@
 # 청년 금융 Multi-Agent State 설계안
 
-> **기준일:** 2026-11-24  
+> **기준일:** 2026-11-25 (Supervisor v27 / main `855561c` 및 상위 그래프 연결 패치 적용 기준)  
 > **역할:** LangGraph `MainState`의 **최상위 Key, 생명주기, 실행·반환·검증·시나리오 계약**을 정의한다.  
 > **프로필 세부 정본:** [`Profile_State_설계안.md`](./Profile_State_설계안.md) — `BasicProfile`, `FinancialProfile`, `Goal`, `Holding`, `Liability`의 모든 세부 필드와 조회·저장 규칙.  
 > **실행 그래프 정본:** [`멀티에이전트_설계안.md`](./멀티에이전트_설계안.md) — Supervisor 및 전문 Agent의 노드 위치·역할·흐름.
 
-**핵심 결정:** 기존 20개 최상위 Key, 병렬 `agent_outbox`, Supervisor 내부 조건부 `profile_node`, `policy/product/fund`, Evidence/Reflection, Final/Guard/Renderer, 후속 A/B를 유지한다. 프로필 DB와 MainState의 두 프로필은 **동일한 논리 스키마**를 공유하되, LLM 입력으로 전체 State를 보내지 않는다. `housing` Agent와 부동산 매물 검색은 없다.
+**핵심 결정:** 기존 20개 최상위 Key, 병렬 `agent_outbox`, Supervisor 내부 조건부 Profile 도구, `policy/product/fund`, Evidence/Reflection, Final/Guard/Renderer, 후속 A/B를 유지한다. 프로필 DB와 MainState의 두 프로필은 **동일한 논리 스키마**를 공유하되, LLM 입력으로 전체 State를 보내지 않는다. `housing` Agent와 부동산 매물 검색은 없다.
 
 ## 0. 개발자 빠른 읽기 순서
 
@@ -45,7 +45,7 @@
 | `financial_profile_changes` | `list[dict[str, Any]]` | 요청 | 승인 대상 실제 금융 프로필 변경 |
 | `memory_candidates` | `list[dict[str, Any]]` | 요청 | 실제 전달 답변의 장기기억 후보 |
 
-**내부 채널:** `agent_outbox: Annotated[list[dict], append_outbox]`는 전문 Agent 병렬 수집 전용이며 **위 20개 공용 Key에 포함하지 않는다**. 인증된 사용자 ID, 권한·동의·토큰은 Runtime Context/보안 저장소에서 다룬다.
+**내부 채널:** `agent_outbox: Annotated[list[dict], append_outbox]`는 전문 Agent 병렬 수집 전용이며 **위 20개 공용 Key에 포함하지 않는다**. 인증된 사용자 ID, 권한·동의·토큰은 Runtime Context/보안 저장소에서 다룬다. 개발용 `WorkflowState.workflow_report`는 공용 State에서 제외한다.
 
 **phase:** `planning`(분류/계획) → `executing`(전문 작업) → `composing`(검증 결과로 답변) → `completed`. 필수 답변이 없으면 `waiting_for_user`와 END, 불가하면 `failed`. Profile 내부 단계·재시도 상세를 최상위 `phase`에 추가하지 않는다.
 
@@ -61,15 +61,15 @@
 - **모든 데이터를 항상 로드하지 않는다:** 프로필의 일부 섹션만 로드한 State가 허용된다. 미로딩, 미확인 `null`, 확인된 `0`, 빈 상세 목록 `[]`은 다르다.
 - **LLM에 전체 State를 주지 않는다:** Dispatcher는 필요한 미로딩 값을 읽기 전용 Tool로 일괄 조회하고 실제값 → `supplied_values` → 해당 `overrides`를 병합한 뒤 허용된 필드만 `profile_view`로 투영한다. 일회성 `age`는 Policy View에 전달할 수 있다. 세부 규칙은 프로필 정본 §4~§6 참조.
 - **상품·가입 이력:** `financial_profile.holdings[]`는 동일 사용자별 계약 서비스의 선택적 현재 개요다. 정밀 비교는 **동일 기준일 스냅샷(`baseline_ref`)**으로 검증한다. 저장 계약의 `holding_ref = holding_id`, 저장 목표의 `goal_ref = goal_id`이다(프로필 정본 §2.2·§3.5). `memory`는 실제 가입의 근거 저장소가 아니다.
-- **프로필 저장:** `basic_profile_changes`/`financial_profile_changes`에 기록하고, Supervisor 내부 `profile_node`만 승인된 저장 서비스 사용. 전문 Agent가 직접 쓰지 않는다.
+- **프로필 저장:** `basic_profile_changes`/`financial_profile_changes`에 기록하고, Supervisor가 승인 대기 변경 후보를 구성하고 실제 저장은 인증·승인·버전 검증을 거치는 별도 서비스가 담당한다. 전문 Agent는 직접 쓰지 않는다.
 
 ### 프로필 입력 세 종류
 
 | 사례 | 반영 위치 | 영속 저장 |
 |---|---|---|
-| “월급 320만 원이야, 계산해줘” | `intent.supplied_values` | 아니오 |
-| “내 월급을 350만 원으로 저장해줘” | `*_profile_changes` → 저장 성공 → 두 프로필 스냅샷 재조회 | 예 |
-| “내년에 월급이 350만 원이라면?” | `scenario_state.scenarios[].overrides` | 아니오 |
+| “세후 월급 320만 원이야, 계산해줘” | `intent.supplied_values` | 아니오 |
+| “내 세후 월급을 350만 원으로 저장해줘” | `*_profile_changes` → 저장 성공 → 두 프로필 스냅샷 재조회 | 예 |
+| “내년에 세후 월급이 350만 원이라면?” | `scenario_state.scenarios[].overrides` | 아니오 |
 | “주택 마련 목표를 추가해줘” | 저장 승인 시 대상 목표만 추가/병합 | 승인 시에만 |
 | “3% 적금 해지 후 5% 적금으로 옮긴다면?” | 시나리오 `holding_actions` | 실제 가입·해지 없음 |
 
@@ -95,17 +95,19 @@
 |---|---|
 | `purpose` | 사용자가 이루려는 목적. Agent 이름이 아님 |
 | `operation` | `new / continue / revise / compare / explain` |
-| `analysis_mode` | 선택: `candidate_compare / strategy_compare / roadmap`; 시나리오 분기 여부와 별개 |
+| `analysis_mode` | `candidate_compare / strategy_compare / roadmap`; compare이면 필수 |
 | `strategy_preference` | 사용자가 명시한 제약만(대출 제외, 기존 상품 유지 등) |
-| `supplied_values` | 이번 상담에 일회성으로 제공한 실제 값·목표. 추정치를 사용자 진술처럼 저장하지 않음 |
+| `supplied_values` | 이번 상담의 실제 프로필 값만 평면 키로 전달(없으면 `{}`). 목표액·기간·금리·납입액은 purpose/objective 또는 분기 assumptions |
 | `profile_update_status` | `not_needed / pending / waiting / done`. **실제 프로필 영속 변경**의 상태만 의미 |
 | `target_advice_ref` | 과거 답변 이어쓰기·수정 대상 |
+
+계획 제출 시 `purpose`, `operation`, `supplied_values`, `profile_update_status`는 필수다. 일반 상담 목표를 저장용 목표로 임의 변환하지 않는다.
 
 `supplied_values.goals`는 **부분 추가/수정/전체 교체 의도**를 해석해 저장 목표와 병합한다. 단순 dict 덮어쓰기나 배열 교체로 기존 `basic_profile.goals[]`를 지우면 안 된다. 목표의 상세 타입·ID·날짜 정밀도는 프로필 정본을 따른다.
 
 ### 3.2 `scenario_state` — 실제 프로필 1개, 임시 분기 N개
 
-임시 재무 상태로 별도 계산해야 할 때에만 생성한다(기본 최대 3개). **상품 후보 5개**나 **동일 조건의 전략 비교**는 곧바로 시나리오 5개를 뜻하지 않는다.
+임시 재무 상태로 별도 계산해야 할 때에만 생성한다(기본 최대 3개). **상품·정책 후보 비교**는 경제적 가정이 달라지는 독립 시나리오와 구분한다. `strategy_compare`와 `compare` + `roadmap`은 2~3개 독립 시나리오가 필요하다.
 
 ```json
 {
@@ -133,25 +135,11 @@
 - `assumptions.holding_actions`: 실제 계약의 `keep/terminate` 및 가상 `subscribe` 등의 경제적 행동. **금융 거래 명령이 아니다.**
 - `assumptions.horizon_months`: 분기 비교 시 동일 평가 기간. 종료일·현재 시점 등 비교 기준도 일치해야 한다.
 - **View 우선순위:** 필요한 실제 프로필 → `intent.supplied_values` → 해당 `overrides`를 병합한 후 허용 필드만 투영한다. `holding_baseline`(동일 실제 사실) 및 가상 `holding_actions`를 View에 별도로 합성한다. 출처와 실제/가정을 구분하며 **State에 View를 여러 벌 저장하지 않는다.**
-- **Supervisor 소유:** 분기 초안 작성 → Profile Node의 사실 조회/정규화 → Supervisor가 최종 분기와 계획 확정. Profile은 Fund를 직접 호출하지 않는다.
+- **Supervisor 소유:** 분기 초안 작성 → 인증 조회 포트 및 Profile 도구의 사실 조회/정규화 → Supervisor가 최종 분기와 계획 확정. Profile은 Fund를 직접 호출하지 않는다.
 
-#### Profile Node 준비 결과의 전달
+#### Profile 준비 결과
 
-별도 내부 LangGraph 노드(`supervisor → profile_node → supervisor`)로 구현하면 기존 `scenario_state.preparation`을 **임시 통신 공간**으로 사용한다.
-
-```json
-{
-  "preparation": {
-    "branch_requests": [
-      {"id": "s_keep", "holding_actions": [{"holding_ref": "holding_01", "action": "keep"}]},
-      {"id": "s_switch", "holding_actions": [{"holding_ref": "holding_01", "action": "terminate"}]}
-    ],
-    "status": "requested"
-  }
-}
-```
-
-Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared"`를 같은 `scenario_state.preparation` 아래에 기록한다. 준비 결과의 `branch_specs[]`에는 분기 `id`, `status`(`ready / conditional`), 검증·정규화된 `holding_actions[]`를 담는다. `conditional`은 추가 조건이 필요한 분기이지 상품 자격 판정이 아니다. 조회로 해결되는 조건은 Product/Policy에 배정하고 사용자만 제공할 수 있는 필수값만 질문한다. Supervisor가 확인 후 `scenarios[]`를 확정하고 `preparation`을 제거한다. **중첩 dict 자동 병합을 가정하지 않는다.** Profile 호출이 같은 Supervisor 함수 내부라면 준비 결과를 로컬 반환값으로 받아도 된다.
+현재는 Supervisor 내부 Tools의 `observations[].result`를 사용한다. Profile의 추출값·누락·변경 후보·소득 모호성 및 계약 준비 결과를 바탕으로 Supervisor가 확정 intent/scenario_state와 질문을 작성한다. 부모 State에 `scenario_state.preparation`을 남기지 않는다.
 
 ### 3.3 `pending_input`
 
@@ -161,7 +149,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 
 - `target`: `profile` / `supervisor` / 전문 작업 ID. `status`: `pending / resolved`. 필요하면 `answers{}`.
 - 실제로 답변이 없으면 진행할 수 없는 **중요 필드만** 질문한다. 단순 탐색이면 `needs_check`로 진행 가능.
-- `ask_user → END`; 다음 사용자 메시지를 Entry Router가 분류하고 **같은 `turn_id`**로 재개한다. Profile Node 자체 `interrupt`를 만들지 않는다.
+- `ask_user → END`; 서비스 목표는 다음 사용자 메시지를 Entry Router가 분류하고 **같은 `turn_id`**로 재개하는 것이다. 현재 개발 실행점은 질문 출력 및 종료까지 연결되어 있으며 자연어 답변의 검증·재개는 별도 연동한다. Profile 도구 자체 `interrupt`를 만들지 않는다.
 - 특정 분기 질문은 `scenario_id`와 연결한다. 가입 여부·과거 납입 등 동일한 사실은 분기별로 반복 질문하지 않는다.
 
 ### 3.4 `basic_profile_changes` / `financial_profile_changes`
@@ -171,7 +159,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 ```
 
 - 상태: `pending / needs_confirmation / applied / rejected / failed`.
-- 사용자 명시 지시 또는 저장 UI 승인 시에만 적용. `change_id`로 중복 실행 방지. 저장 서비스는 프로필 `version`으로 충돌 검증 후 재조회한다.
+- 명시적 변경 요청으로 승인 후보를 생성하고 인증된 사용자 승인 절차를 통과한 후에만 적용. `change_id`로 중복 실행 방지. 저장 서비스는 프로필 `version`으로 충돌 검증 후 재조회한다.
 - 목표 일부 수정 시 **대상 `goal_id`(기존 결과의 `goal_ref`와 동일)**를 확인해 기존 목표와 병합한다. `field="goals"`의 `value`는 부분 변경 의도를 합성한 완전한 목록으로 처리한다. 미로딩 목표를 유실시키지 않으며 사용자 승인 없이 다른 목표를 삭제하지 않는다.
 - 실제 보유상품의 등록/수정도 승인·버전 검증 대상이며, **시나리오 `holding_actions`를 저장 호출로 해석하지 않는다**.
 - `*_profile_changes`는 새로운 요청에서 초기화하며 프로필 자체와 저장 목표는 유지한다.
@@ -186,7 +174,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 {
   "revision": 1, "review_retry_count": 0,
   "tasks": [
-    {"task_id": "product_terms", "agent": "product", "objective": "기존 적금 및 신규 후보 계약·해지 조건 확인", "scenario_id": null, "depends_on": [], "status": "pending", "run_id": null},
+    {"task_id": "product_terms", "agent": "product", "objective": "기존 적금 및 신규 후보 계약·해지 조건 확인", "scenario_id": null, "depends_on": [], "candidate_limit": 3, "status": "pending", "run_id": null},
     {"task_id": "fund_keep", "agent": "fund", "objective": "기존 계약 유지 시 24개월 현금흐름", "scenario_id": "s_keep", "depends_on": ["product_terms"], "status": "pending", "run_id": null},
     {"task_id": "fund_switch", "agent": "fund", "objective": "해지 후 교체 시 24개월 현금흐름", "scenario_id": "s_switch", "depends_on": ["product_terms"], "status": "pending", "run_id": null}
   ]
@@ -197,7 +185,8 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 - 허용 전문 Agent: **`policy / product / fund`**. `housing`은 허용하지 않는다. 전세/주담대는 Product.
 - `depends_on`은 **필수 선행**만 표기. Fund 단독 실행 허용. 공통 Product/Policy 조건 조회는 한 번 실행하여 분기별 Fund가 결과 재사용.
 - `run_id`는 Dispatch 시 부여. `revision`은 입력·가정·작업 구성이 바뀔 때 증가하며 단순 네트워크 재시도는 새 `run_id`만 부여한다.
-- 변경된 분기 및 이에 의존한 작업 결과/검수는 무효화하고 재실행. Reflection에 의한 재계획은 원칙적으로 1회(`review_retry_count`).
+- 계획/입력/분기 변경 시 revision을 증가시키고 현재 구현은 전체 작업을 보수적으로 초기화할 수 있다. 검수 반려 재계획은 `review_retry_count` 1회, 실제 실패/needs_input 재계획은 개발 그래프 실행당 별도 1회다.
+- Product/Policy의 서버 `candidate_limit`: 종류별 분기당 `min(3, 6 // 활성 분기 수)`(비분기=1), 종류별 전체 최대 6개. 공통 검색은 소비 분기별 차감. Fund는 제외.
 - 복잡한 기간 패치/필드별 입력 해시/공용 호출 예산 장부는 만들지 않는다. 재시도 및 호출 상한은 서버 설정에 둔다.
 
 ### 4.2 전문 Agent 입력 — 필요한 범위만 전달
@@ -209,10 +198,11 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 | `profile_view` | Dispatcher가 **선택된 프로필 필드만** 구성. 전체 MainState·계좌 원문을 LLM에 전달하지 않는다 |
 | `profile_view.holding_baseline`(선택) | 실제 계약 시점·납입 이력의 **필요 사실/참조·as_of**만 조회해 전달 |
 | `profile_view.holding_actions`(선택) | 해당 분기 임시 경제적 행동. 저장/실행 명령 아님 |
-| `upstream_results` | 수락된 선행 작업의 관련 데이터 |
-| `extra_answers` | 특정 정책/상품에만 필요한 이번 상담 입력 |
+| `upstream_results` | 모든 직접 필수 선행 작업의 현재 완료 Envelope를 자동 전달. Agent는 필요한 값만 LLM에 투영 |
+| `extra_answers` | 동일 작업·분기의 검증 완료 답변(`question_id: answers`) |
 | `prior_advice` | 이전 상담 수정 요청 때만 필요한 부분 |
 | `revision_feedback` | 검증 반려 후 재실행 시만 `previous_run_id, previous_output_ref?, issues[]` |
+| `candidate_limit` | 검색 작업 확장 입력. 서버 상한, 공용 AgentInput 타입 변경 없음 |
 
 필드 선택 규칙과 Tool API는 프로필 정본을 따른다. 기본적인 필드 선택은 Python의 whitelist/Field Set으로 처리하며, 누락한 상세만 읽기 전용 Profile Tool로 **묶어서 호출**한다.
 
@@ -229,6 +219,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 
 - 전문 Agent는 자기 내부 `data` 구조를 소유한다. 기본 Envelope만 공통으로 고정한다.
 - Policy: `data.candidates[]`의 `eligibility.status`(`eligible / ineligible / needs_check`), `checks[]`, `key_attributes.benefits[]`, 공식 URL·개별 근거.
+- Product/Policy의 완료 결과는 `data.candidates[]` 필수(사실 조회/미발견은 `[]`). 상한 초과/누락은 Collector 반려.
 - Product: `data.candidates[]`의 유형·상품 금리·기간·한도·상환/수익·공식 URL·미확인 가입조건. 실제 상품 존재/적용금리 검증.
 - Fund: 현금흐름, `roadmap[]`, 필요 시 `strategy_options[]`, `metrics[]`; `actual / estimated / planned / assumed` 구분.
 - 중요한 정책 혜택·상품 금리·한도·자격·계산 수치에는 단위, 기준일(해당 시), 개별 `evidence_ref` 연결. 확정 불가 시 `needs_check`/경고.
@@ -239,7 +230,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 
 - Collector가 `task_id + run_id + plan_revision + scenario_id`를 검사해 현재 유효한 결과만 `agent_results[task_id]`에 채택.
 - `review_results[task_id] = {target_run_id, evidence?: {status, issues[]}, reflection?: {status, issues[]}}`이며 두 검사는 서로의 값을 덮어쓰지 않는다. `status`는 `passed / needs_check / revise`.
-- 반려 시 Dispatcher가 이전 오류 요약을 `revision_feedback`에 담는다. `superseded_results[old_run_id]`는 이전 출력 참조(존재 시)와 오류만 보관하며 전문 전체 본문을 복제하지 않는다.
+- 무효화된 실제 검수 반려 run은 `superseded_results[old_run_id]`에 task_id/scenario_id/plan_revision/issues만 보존하고 동일 작업 재실행에 revision_feedback을 전달한다. 실제 저장 참조가 없으면 previous_output_ref는 생략한다.
 - 저장·checkpoint의 실제 `previous_output_ref`가 없는 경우 이를 임의 생성하지 않는다.
 - 비교는 **동일한 `baseline_ref`/현재 기준일/평가 종료일**을 검사한다. 기납입 원금·해지 환급액·월 적립액 중복 계산 및 시나리오 교차 사용을 차단한다.
 
@@ -253,7 +244,7 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 {"last_advice_ref": "advice_001", "retrieval_status": "not_requested", "retrieved": []}
 ```
 
-- 과거 맥락이 필요할 때만 Memory Retrieval 실행. `retrieval_status`: `found / no_match / failed / access_denied`.
+- 연결된 Memory 포트에서 새 turn 기본 조회를 수행하며 상세 조회는 필요한 경우만 실행한다. `retrieval_status`: `not_requested / found / no_match / failed / access_denied`. 동일 turn의 기본 조회는 재사용한다. `agent/memory/memory_integration.py`에 인증된 PostgreSQL 포트 생성 함수가 추가되어 있으나 기본 개발 그래프에는 인증 사용자/DB 서비스가 주입되지 않는다.
 - 사용자의 과거 추천 `accepted/rejected/changed`를 `type="user_decision", target_ref, decision, reason?, source_ref` 등으로 필요할 때만 기록.
 - 기억에서 발견된 “가입했어”라는 발화는 **현재 실제 가입 사실을 증명하지 않는다**. 실제 보유·납입은 인증 가입 서비스에서 확인한다.
 - 최근 답변 수정은 `last_advice_ref`/checkpoint 사용. 과거 금리를 현재 사실로 재사용 금지.
@@ -296,13 +287,15 @@ Profile Node가 `baseline_ref / branch_specs / missing_inputs / status="prepared
 
 ## 6. 표준 실행 경계
 
+아래 그림은 서비스 목표 구조다. 개발 그래프의 현재 실제 연결과 미구현 기능은 [LangGraph_Langfuse_개발안내.md](./LangGraph_Langfuse_개발안내.md)를 따른다.
+
 **노드 연결과 변경 책임은 [`멀티에이전트_설계안.md` §1](./멀티에이전트_설계안.md)의 실행 그래프를 정본으로 한다.** State의 이동·갱신만 요약하면 다음과 같다.
 
 ```mermaid
 flowchart LR
     U[사용자] --> E[Entry / Loader]
     E --> S[Supervisor]
-    S <-.-> P[내부 profile_node]
+    S <-.-> P[내부 Profile 도구]
     S <-.-> M[Memory Retrieval]
     S --> V[Validator / Dispatcher]
     V --> A[Policy / Product / Fund]
@@ -312,10 +305,11 @@ flowchart LR
     R --> F[Final / Guard / Renderer]
     R -.->|반려| S
     C -.->|후속| V
+    C -.->|실제 실행 실패 또는 정보 부족: 최대 1회| S
     S -.->|질문| Q[ask_user / END]
 ```
 
-- 비교 준비(`scenario_state.preparation`)는 Supervisor↔Profile 내부 왕복에서만 사용한다.
+- 비교 준비는 Supervisor 내부 관찰에서 수행하며 확정 분기만 부모 State에 반영한다.
 - Agent의 병렬 결과는 Collector 하나만 `agent_results`에 반영하며 `review_results`는 검수 노드가 순차 갱신한다.
 - A/B는 첫 답변 후 **다음 사용자 요청**에서만 시작한다.
 
@@ -381,8 +375,8 @@ class MainState(TypedDict, total=False):
 3. 저장 목표 복수 목록이 새 turn·다른 Agent 실행 뒤에도 보존된다. 승인한 대상 목표만 수정된다.
 4. Profile 입력이 `intent.supplied_values` / 영속 저장 / `scenario_state.overrides`로 정확히 분리된다.
 5. `holdings` 미로딩·빈 목록·미확인 값을 구별하고, 요약 잔액과 보유상품 금액을 중복 더하지 않는다.
-6. 3% 기존 적금 유지 vs 가상 5% 교체에서 `baseline_ref`가 공통이며 `profile_node`는 계약 사실만 준비한다.
-7. Supervisor만 최종 `scenarios[]`·`execution_plan`을 확정하고 `scenario_state.preparation` 임시값을 제거한다.
+6. 3% 기존 적금 유지 vs 가상 5% 교체에서 `baseline_ref`가 공통이며 Profile 도구 및 인증 조회 서비스는 계약 사실만 준비한다.
+7. Supervisor만 최종 scenarios[]·execution_plan을 확정하고 내부 관찰은 부모 State에 남기지 않는다.
 8. Product 공통 조회 결과를 `s_keep/s_switch`의 Fund 작업에서 재사용한다.
 9. `policy/product/fund`만 실행되고 `housing` 작업은 거부된다. Fund 단독 로드맵이 가능하다.
 10. 전문 Agent LLM 입력에는 업무별 `profile_view`만 들어가고 전체 State를 전달하지 않는다.
