@@ -52,5 +52,20 @@ class WorkflowInputTests(unittest.TestCase):
         self.assertIn("langfuse", info["packages"])
 
 
+    def test_invalid_reason_and_repair_are_visible(self):
+        lines = []
+        show_update(("supervisor:123",), {"reason": {"decision": {"kind": "invalid", "reason": "intent.supplied_values missing"}}}, lines.append)
+        show_update(("supervisor:123",), {"finalize": {"retry": True, "issues": ["intent.supplied_values missing"]}}, lines.append)
+        self.assertIn("       reason: intent.supplied_values missing", lines)
+        self.assertIn("       retry: true", lines)
+        self.assertIn("       issue: intent.supplied_values missing", lines)
+
+    def test_plan_error_visible_without_raw_state(self):
+        lines = []
+        show_update(("supervisor:123",), {"plan": {"candidate_error": "invalid DAG", "source": {"private": "private-marker"}}}, lines.append)
+        self.assertIn("       plan error: invalid DAG", lines)
+        self.assertNotIn("private-marker", str(lines))
+
+
 if __name__ == "__main__":
     unittest.main()
