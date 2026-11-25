@@ -125,10 +125,20 @@ def validate_decision(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise SupervisorContractError("Supervisor LLM은 dict 의사결정을 반환해야 합니다.")
     kind = data.get("kind")
-    if kind not in {"call_tool", "submit_plan", "ask_user", "compose"}:
+    if not isinstance(kind, str) or kind not in {"call_tool", "submit_plan", "ask_user", "compose"}:
         raise SupervisorContractError("알 수 없는 Supervisor kind입니다.")
     if not isinstance(data.get("reason"), str):
         raise SupervisorContractError("판단 이유 reason이 필요합니다.")
+    allowed = {"kind", "reason", "intent"} | {
+        "call_tool": {"tool_name", "tool_input"},
+        "submit_plan": {"execution_plan", "scenario_state", "selected_scenario_id", "goal_mode"},
+        "ask_user": {"pending_input", "goal_mode"},
+        "compose": {"goal_mode"},
+    }[kind]
+    if set(data) - allowed:
+        raise SupervisorContractError(f"{kind}: unrelated or protected Decision fields: " + ", ".join(sorted(map(str, set(data) - allowed))))
+    if isinstance(data.get("intent"), dict) and set(data["intent"]) - INTENT_FIELDS:
+        raise SupervisorContractError("intent contains unsupported fields")
     if kind == "call_tool":
         if data.get("tool_name") not in ALLOWED_TOOLS:
             raise SupervisorContractError("허용되지 않은 내부 도구입니다.")

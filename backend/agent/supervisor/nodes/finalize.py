@@ -11,7 +11,8 @@ from ..contracts import (
 from .plan import attach_memory, merged_intent, last_result
 from ..candidate_budget import validate_candidate_limits
 from ..clarification import merge_pending_questions, has_answered_waiting_turn
-from ..tools.profile_fields import FIELDS, METADATA, validate_profile, source_with_reads, attach_read_snapshot
+from ..tools.profile_fields import FIELDS, METADATA, validate_profile, source_with_reads
+from ..state_policy import finalize_patch
 
 _ALLOWED_INTENT_STATUS = {"not_needed", "pending", "waiting", "done"}
 
@@ -174,10 +175,7 @@ def run(state: SupervisorWorkingState, *, max_repairs: int) -> dict[str, Any]:
                 raise SupervisorContractError("profile_update_status가 올바르지 않습니다.")
             if status == "done" and (src.get("intent") or {}).get("profile_update_status") != "done":
                 raise SupervisorContractError("프로필 저장 완료를 LLM이 직접 선언할 수 없습니다.")
-        if set(patch) & {"basic_profile", "financial_profile", "agent_results", "review_results"}:
-            raise SupervisorContractError("Supervisor는 원본 프로필 및 전문 결과를 직접 수정하지 않습니다.")
-        # Read-only snapshot hydration is distinct from a saved profile change.
-        attach_read_snapshot(state, patch)
+        patch = finalize_patch(state, patch, route)
         return {"main_patch": patch, "next_node": route, "retry": False, "done": True}
     except (KeyError, TypeError, SupervisorContractError) as exc:
         repairs = state.get("repair_count", 0) + 1

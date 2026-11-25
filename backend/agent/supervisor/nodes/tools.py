@@ -43,6 +43,8 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
                     result = {"status": "failed", "error_code": f"profile_{raw['status']}"}
                 else:
                     result = normalize_profile_result(raw)
+                    if args["is_temporary"] and result.get("changes"):
+                        raise SupervisorContractError("Temporary Profile prepare cannot propose persisted changes")
     elif name == "retrieve_memory":
         validate_memory_request(args)
         cached = next((obs["result"] for obs in reversed(state.get("observations", [])) if obs["name"] == name and obs.get("request") == args), None)

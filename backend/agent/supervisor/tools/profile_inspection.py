@@ -57,7 +57,7 @@ def inspect_fields(supervisor: "Supervisor", state: dict[str, Any], fields: list
         statuses.update(dict.fromkeys(needed, "not_loaded"))
     elif needed:
         try:
-            raw = supervisor.ports.get_profile_fields(needed)
+            raw = supervisor.ports.get_profile_fields(list(needed))
         except Exception:
             # 서비스 예외의 원문/인증정보를 모델에 보내지 않는다.
             statuses.update(dict.fromkeys(needed, "failed"))
@@ -68,8 +68,8 @@ def inspect_fields(supervisor: "Supervisor", state: dict[str, Any], fields: list
                 statuses.update(dict.fromkeys(needed, raw["status"]))
             else:
                 wrapped = raw if "profile" in raw else {"profile": raw, "missing_info": []}
-                if wrapped.get("changes"):
-                    raise SupervisorContractError("Read-only Profile response cannot propose changes")
+                if wrapped.get("changes") or wrapped.get("branch_specs"):
+                    raise SupervisorContractError("Read-only Profile response cannot propose changes or branches")
                 read = normalize_profile_result(wrapped)
                 fresh = read["profile"]
                 for domain in FIELDS:

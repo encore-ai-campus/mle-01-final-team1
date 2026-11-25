@@ -75,6 +75,83 @@ RECORD_FIELDS = {
 METADATA = {"snapshot_at", "version"}
 READ_FIELDS = frozenset(f"{d}.{f}" for d, fs in FIELDS.items() for f in fs - METADATA)
 REPRESENTATIVE = (FIELDS["basic_profile"] | FIELDS["financial_profile"]) - METADATA - {"holdings", "liabilities"}
+SUPPLIED_FIELDS = REPRESENTATIVE | {"age"}
+# LLM의 출력 스키마와 실제 허용 필드는 같은 상수에서 생성한다.
+_SCALAR_ENUMS = {
+    "employment_status": ("employed", "self_employed", "student", "job_seeking", "unemployed", "other"),
+    "target_date_precision": ("year", "month", "day"),
+}
+_GOAL_STATUSES = ("active", "paused", "completed")
+
+
+def _scalar_json_schema(field: str) -> dict[str, Any]:
+    if field.endswith("_krw") or field in {"priority", "household_size", "age"}:
+        spec: dict[str, Any] = {"type": ["integer", "null"], "minimum": 1 if field == "household_size" else 0}
+        if field == "age":
+            spec["maximum"] = 120
+        return spec
+    if field in {"owns_home", "has_regular_income"}:
+        return {"type": ["boolean", "null"]}
+    if field in _SCALAR_ENUMS:
+        return {"type": ["string", "null"], "enum": [*_SCALAR_ENUMS[field], None]}
+    if field in {"birth_date", "target_date"}:
+        return {"type": ["string", "null"], "format": "date"}
+    return {"type": ["string", "null"]}
+
+
+def overlay_json_schema(*, supplied: bool) -> dict[str, Any]:
+    """LLM에 전달할 평면 프로필 입력 스키마. 실제 검증은 validate_overlay가 담당한다."""
+    allowed = SUPPLIED_FIELDS if supplied else REPRESENTATIVE
+    properties = {key: _scalar_json_schema(key) for key in sorted(allowed - {"goals"})}
+    goal_properties = {key: _scalar_json_schema(key) for key in sorted(RECORD_FIELDS["goals"])}
+    goal_properties["status"] = {"type": "string", "enum": list(_GOAL_STATUSES)}
+    properties["goals"] = {"type": "array", "items": {"type": "object", "properties": goal_properties,
+                          "additionalProperties": False},
+                          "description": "구조화 목표 변경에만 사용. 상담 목표액/상대 기간은 purpose와 objective에 둔다."}
+    return {"type": "object", "properties": properties, "additionalProperties": False}
+
+
+# 과거 LLM이 상담 목표를 프로필 필드처럼 잘못 출력했던 경우만 안전하게 분리한다.
+_CONSULTATION_ALIASES = {
+    "target_amount_krw": "target_amount_krw", "goal_target_amount_krw": "target_amount_krw",
+    "horizon_months": "horizon_months", "goal_horizon_months": "horizon_months",
+}
+
+
+def _key_label(key: Any) -> str:
+    # 오류 메시지에는 값이 아닌 키만 노출하고 비정상적인 긴 문자열은 제한한다.
+    return repr(key)[:96]
+
+
+def normalize_supplied_values(values: Any) -> tuple[dict[str, Any], dict[str, int]]:
+    """정확히 일치하는 조회 경로를 평면 키로 변환하고 상담용 수치만 별도로 분리한다.
+
+    세전/세후, 잔액/가용액, 저장 목표 및 가정은 추정하지 않는다. 허용되지 않은 키,
+    충돌하는 별칭, 잘못된 타입은 실패시키고 원본은 수정하지 않는다.
+    """
+    if not isinstance(values, dict):
+        _fail("supplied_values", "object required; use flat canonical profile keys")
+    normalized: dict[str, Any] = {}
+    consultation: dict[str, int] = {}
+    for key, value in values.items():
+        if key in _CONSULTATION_ALIASES:
+            target = _CONSULTATION_ALIASES[key]
+            if type(value) is not int or value < (1 if target == "horizon_months" else 0):
+                _fail(f"supplied_values.{key}", "integer KRW/positive months required; keep consultation conditions in purpose/objective")
+            if target in consultation and consultation[target] != value:
+                _fail(f"supplied_values.{key}", "conflicting consultation aliases")
+            consultation[target] = value
+            continue
+        target = key
+        if isinstance(key, str) and key in READ_FIELDS:
+            target = key.rsplit(".", 1)[1]
+        if target not in SUPPLIED_FIELDS:
+            _fail("supplied_values", f"unknown or protected field (v3.4): {_key_label(key)}; use flat schema keys; consultation goal/period in purpose/objective")
+        if target in normalized and (type(normalized[target]) is not type(value) or normalized[target] != value):
+            _fail(f"supplied_values.{target}", "conflicting values for canonical key")
+        normalized[target] = deepcopy(value)
+    validate_overlay(normalized, supplied=True)
+    return normalized, consultation
 
 
 def _fail(field: str, issue: str) -> None:
@@ -127,16 +204,14 @@ def _scalar(field: str, value: Any) -> None:
             _fail(field, "finite number required")
     elif not isinstance(value, str) or not value.strip():
         _fail(field, "nonempty string required")
-    allowed = {"employment_status": {"employed", "self_employed", "student", "job_seeking", "unemployed", "other"},
-               "target_date_precision": {"year", "month", "day"}}
-    if field in allowed and value not in allowed[field]:
-        _fail(field, "unknown value")
+    if field in _SCALAR_ENUMS and value not in _SCALAR_ENUMS[field]:
+        _fail(field, "unknown value; allowed: " + "/".join(_SCALAR_ENUMS[field]))
 
 
 def _records(field: str, value: Any, *, partial_goals: bool = False) -> None:
     if value is None:
         return
-    models = {"goals": ("goal_id", {"goal_type", "status"}, {"active", "paused", "completed"}),
+    models = {"goals": ("goal_id", {"goal_type", "status"}, set(_GOAL_STATUSES)),
               "holdings": ("holding_id", {"holding_id", "product_type", "status"}, {"active", "matured", "closed"}),
               "liabilities": ("liability_id", {"liability_id", "liability_type", "status"}, {"active", "paid_off"})}
     id_key, required, statuses = models[field]
@@ -181,14 +256,27 @@ def validate_profile(domain: str, profile: Any) -> None:
 
 
 def validate_overlay(values: Any, *, supplied: bool = False) -> None:
-    allowed = REPRESENTATIVE | ({"age"} if supplied else set())
-    if not isinstance(values, dict) or set(values) - allowed:
-        _fail("overrides" if not supplied else "supplied_values", "unknown or protected field (v3.4)")
+    allowed = SUPPLIED_FIELDS if supplied else REPRESENTATIVE
+    label = "supplied_values" if supplied else "overrides"
+    if not isinstance(values, dict):
+        _fail(label, "object required; use flat canonical profile keys")
+    unknown = set(values) - allowed
+    if unknown:
+        names = ", ".join(sorted(_key_label(k) for k in unknown)[:8])
+        _fail(label, f"unknown or protected field (v3.4): {names}; use flat schema keys; consultation goal/period in purpose/objective or scenario assumptions")
     for k, v in values.items():
         if k == "goals":
-            _records(k, v, partial_goals=True)
+            try:
+                if v is None:
+                    _fail(k, "null cannot replace saved goals")
+                _records(k, v, partial_goals=True)
+            except SupervisorContractError as exc:
+                _fail(f"{label}.goals", f"{exc}; target_date=ISO date, precision=year/month/day; relative periods belong in purpose/objective or scenario assumptions")
         else:
-            _scalar(k, v)
+            try:
+                _scalar(k, v)
+            except SupervisorContractError as exc:
+                _fail(f"{label}.{k}", str(exc))
 
 
 def canonical_profile_path(field: Any) -> str:
@@ -257,9 +345,24 @@ def source_with_reads(state: dict[str, Any]) -> dict[str, Any]:
         result = obs.get("result", {})
         if obs.get("name") != "profile_agent" or not result.get("verified_read"):
             continue
-        for domain, values in result["verified_fields"].items():
+        request = obs.get("request", {})
+        if request.get("operation") != "inspect" or request.get("is_temporary") is not True or result.get("status") in ("failed", "access_denied", "unavailable"):
+            raise SupervisorContractError("Only successful read-only Profile inspect can hydrate State")
+        requested = set(validate_read_fields(request.get("fields")))
+        verified = result.get("verified_fields")
+        if not isinstance(verified, dict) or set(verified) - set(FIELDS):
+            raise SupervisorContractError("Invalid verified Profile snapshot")
+        for domain, values in verified.items():
+            validate_profile(domain, values)
             target = source.setdefault(domain, {})
             for key, value in values.items():
+                path = f"{domain}.{key}"
+                status = result.get("field_status", {}).get(path)
+                observed = result.get("profile", {}).get(domain, {})
+                if path not in requested or status not in ("available", "missing") or (status == "missing") != (value is None) or key not in observed or observed[key] != value:
+                    raise SupervisorContractError("Profile snapshot hydration must match requested, confirmed fields")
+                if key in target and (type(target[key]) is not type(value) or target[key] != value):
+                    raise SupervisorContractError("Profile inspect cannot overwrite a loaded field")
                 if key not in target:
                     target[key] = deepcopy(value)
     return source
