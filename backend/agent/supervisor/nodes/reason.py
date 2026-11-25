@@ -8,6 +8,7 @@ from ..state import SupervisorWorkingState
 from ..tools.profile_fields import profile_availability, source_with_reads
 from ..tools.memory import merge_memory
 from ..tools.ports import memory_key
+from .plan import execution_retry_candidates, current_review_rejections, server_profile_update_status
 if TYPE_CHECKING:
     from ..supervisor_main import Supervisor
 
@@ -91,6 +92,24 @@ def _compact_observations(observations: list[dict[str, Any]]) -> list[dict[str, 
     return compact
 
 
+# Bounded planning scalars, not the full financial profile or personal/contract lists.
+PLANNING_AMOUNT_FIELDS = (
+    "monthly_net_income_krw", "annual_gross_income_krw", "monthly_living_expenses_krw",
+    "monthly_debt_payment_krw", "available_assets_krw", "total_assets_krw", "total_debt_krw",
+)
+
+
+def _loaded_planning_amounts(source: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    supplied = (source.get("intent") or {}).get("supplied_values") or {}
+    observed = {k for obs in observations if obs.get("name") == "profile_agent"
+                and (obs.get("request") or {}).get("operation") == "inspect"
+                for k in (obs.get("result", {}).get("profile", {}).get("financial_profile") or {})}
+    actual = source.get("financial_profile") or {}
+    # These seven scalars are already-loaded server data. Never derive or hydrate values here.
+    return {k: actual[k] for k in PLANNING_AMOUNT_FIELDS
+            if k not in supplied and k not in observed and type(actual.get(k)) is int}
+
+
 def build_context(supervisor: "Supervisor", state: SupervisorWorkingState, count: int) -> dict[str, Any]:
     source = source_with_reads(state)
     observations = state.get("observations", [])
@@ -123,6 +142,16 @@ def build_context(supervisor: "Supervisor", state: SupervisorWorkingState, count
         "issues": deepcopy(state.get("issues", [])),
         "call_index": count,
     }
+    amounts = _loaded_planning_amounts(state["source"], observations)
+    if amounts:
+        context["loaded_planning_amounts"] = amounts
+    retry_ids = execution_retry_candidates(source)
+    review_ids = current_review_rejections(source)
+    if retry_ids or review_ids:
+        context["replan_context"] = {"execution_retry_task_ids": list(retry_ids), "review_rejected_task_ids": list(review_ids)}
+    update_status = server_profile_update_status(source)
+    if update_status in {"pending", "waiting"}:
+        context["profile_approval_pending"] = True
     if memory.get("retrieval_status") != "access_denied":
         latest_detail = next((o["result"] for o in reversed(observations) if o["name"] == "retrieve_memory"), None)
         if latest_detail and latest_detail.get("retrieval_status") == "found":

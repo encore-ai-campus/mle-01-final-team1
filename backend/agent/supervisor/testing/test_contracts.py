@@ -1430,3 +1430,384 @@ class ProfileIncomeContractTests(unittest.TestCase):
         out = Supervisor(decide=lambda _: next(decisions), ports=SupervisorPorts(get_profile_fields=lambda _: raw), trace_sink=trace.append).run(source, use_graph=False)
         self.assertEqual(next(x for x in trace if x["node"] == "tools")["output"]["observation"]["result"]["status"], "failed")
         self.assertNotIn("financial_profile", out.update)
+
+
+class PersistentMemoryContractTests(unittest.TestCase):
+    """PostgreSQL과 동일한 공개 읽기 계약을 사용하며 실제 DB에는 접근하지 않는다."""
+
+    @staticmethod
+    def _item(mid="m1", kind="user_preference", **extra):
+        return {"memory_id": mid, "memory_type": kind, "content": "대출 제외 선호",
+                "source_ref": "advice_1", **extra}
+
+    @staticmethod
+    def _result(*items, status=None):
+        return {"retrieval_status": status or ("found" if items else "no_match"),
+                "retrieved": list(items)}
+
+    def _service(self, results):
+        from unittest.mock import Mock
+        service = Mock(spec=["search_memory", "save_memory"])
+        service.search_memory.side_effect = results
+        return service
+
+    def test_prefetch_bounded_deduplicated_and_type_scoped(self):
+        from ..tools.integration import memory_ports, MAX_PREFETCH_SEARCHES
+        from ..tools.ports import memory_request_key
+        service = self._service([self._result()] * 10)
+        prefetch, _ = memory_ports(service, authenticated_user_id="owner")
+        query = "대출 적금 예금 정책 저축 전세 월세"
+        self.assertEqual(prefetch({"query": query, "limit": 10})["retrieval_status"], "no_match")
+        calls = service.search_memory.call_args_list
+        self.assertEqual(len(calls), MAX_PREFETCH_SEARCHES)
+        self.assertEqual(MAX_PREFETCH_SEARCHES, 5)
+        requests = [c.args[0] for c in calls]
+        self.assertEqual(len({memory_request_key(r) for r in requests}), len(requests))
+        self.assertEqual([r["query"] for r in requests[:3]], [query, "대출", "적금"])
+        self.assertTrue(all(r["memory_types"] == ["user_preference"] for r in requests[3:]))
+        self.assertTrue(all(c.kwargs["authenticated_user_id"] == "owner" for c in calls))
+        service.search_memory.reset_mock(side_effect=True)
+        service.search_memory.return_value = self._result()
+        prefetch({"query": query, "memory_types": ["user_decision"]})
+        self.assertEqual(service.search_memory.call_count, 3)
+        self.assertTrue(all(c.args[0]["memory_types"] == ["user_decision"] for c in service.search_memory.call_args_list))
+        service.save_memory.assert_not_called()
+
+    def test_prefetch_preserves_partial_results_and_stops_on_failure(self):
+        from ..tools.integration import memory_ports
+        item = self._item()
+        service = self._service([self._result(item), self._result(status="failed"), self._result()])
+        prefetch, _ = memory_ports(service, authenticated_user_id="owner")
+        result = prefetch({"query": "대출 저축 적금", "limit": 10})
+        self.assertEqual(result["retrieval_status"], "found")
+        self.assertEqual([i["memory_id"] for i in result["retrieved"]], ["m1"])
+        self.assertEqual(service.search_memory.call_count, 2)
+        service = self._service([RuntimeError("secret database password"), self._result(item)])
+        prefetch, _ = memory_ports(service, authenticated_user_id="owner")
+        self.assertEqual(prefetch({"query": "대출 저축 적금"}), self._result(status="failed"))
+        self.assertEqual(service.search_memory.call_count, 1)
+
+    def test_prefetch_denial_discards_hits_and_missing_auth_never_queries(self):
+        from ..tools.integration import memory_ports
+        service = self._service([self._result(self._item()), {"retrieval_status": "access_denied", "retrieved": None}])
+        prefetch, _ = memory_ports(service, authenticated_user_id="owner")
+        self.assertEqual(prefetch({"query": "대출 적금"}), self._result(status="access_denied"))
+        self.assertEqual(service.search_memory.call_count, 2)
+        denied, detail = memory_ports(service, authenticated_user_id="")
+        for port in (denied, detail):
+            self.assertEqual(port({"query": "대출"}), self._result(status="access_denied"))
+        self.assertEqual(service.search_memory.call_count, 2)
+        service.save_memory.assert_not_called()
+
+    def test_postgres_jsonb_and_private_fields_normalized(self):
+        raw = self._result(self._item("null", metadata=None, user_id="private"),
+                           self._item("inactive", metadata={"status": " Inactive "}),
+                           self._item("active", metadata={"decision": "rejected", "status": "active", "private": "secret"}))
+        result = normalize_memory_result(raw)
+        self.assertEqual([i["memory_id"] for i in result["retrieved"]], ["null", "active"])
+        self.assertEqual(result["retrieved"][0]["metadata"], {})
+        self.assertNotIn("user_id", result["retrieved"][0])
+        self.assertEqual(result["retrieved"][1]["metadata"], {"decision": "rejected", "status": "active"})
+        for bad in ([], "", False, {"status": []}):
+            with self.subTest(metadata=bad), self.assertRaises(SupervisorContractError):
+                normalize_memory_result(self._result(self._item(metadata=bad)))
+        self.assertEqual(normalize_memory_result({"retrieval_status": "access_denied", "retrieved": None}), self._result(status="access_denied"))
+
+    def test_detail_enforces_requested_types_and_limit(self):
+        from ..tools.integration import memory_ports
+        records = [self._item(f"m{i}", kind="user_decision") for i in range(4)]
+        service = self._service([self._result(*records), self._result(self._item())])
+        _, detail = memory_ports(service, authenticated_user_id="owner")
+        result = detail({"query": "대출", "memory_types": ["user_decision"], "limit": 2})
+        self.assertEqual(len(result["retrieved"]), 2)
+        self.assertEqual(detail({"query": "대출", "memory_types": ["user_decision"]}), self._result(status="failed"))
+        with self.assertRaises(SupervisorContractError):
+            detail({"query": "대출", "user_id": "other"})
+        self.assertEqual(service.search_memory.call_count, 2)
+
+    def test_equivalent_detail_requests_reuse_only_inside_execution(self):
+        from ..tools.ports import memory_request_key
+        a = {"query": " 적금 "}
+        b = {"query": "적금", "limit": 5, "memory_types": list(reversed(MEMORY_TYPES))}
+        self.assertEqual(memory_request_key(a), memory_request_key(b))
+        self.assertNotEqual(memory_request_key(a), memory_request_key({"query": "적금", "limit": 6}))
+        self.assertNotEqual(memory_request_key(a), memory_request_key({"query": "적금", "memory_types": ["user_decision"]}))
+        calls = []
+        def retrieve(request):
+            calls.append(deepcopy(request))
+            return self._result(status="failed")
+        ports = SupervisorPorts(retrieve_memory=retrieve, load_memory_context=lambda _: self._result())
+        def execute(turn):
+            decisions = iter([{"kind": "call_tool", "reason": "기억 확인", "tool_name": "retrieve_memory", "tool_input": req}
+                              for req in (a, b)] + [SuppliedValuesRegressionTests._plan()])
+            source = SuppliedValuesRegressionTests._source()
+            source["turn_id"] = turn
+            return Supervisor(decide=lambda _: deepcopy(next(decisions)), ports=ports).run(source, use_graph=False)
+        self.assertEqual(execute("t1").tool_calls, 2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(execute("t2").tool_calls, 2)
+        self.assertEqual(len(calls), 2)
+
+    def test_authenticated_combined_binding_uses_same_uuid_and_no_writes(self):
+        import sys
+        from types import ModuleType
+        from uuid import uuid4
+        from unittest.mock import Mock
+        from ..tools.integration import bind_authenticated_ports
+        owner, other = uuid4(), uuid4()
+        reads = []
+        class ProfileService:
+            def __init__(self, *, authenticated_user_id):
+                self.uid = authenticated_user_id
+            def get_profile_fields(self, fields):
+                reads.append((self.uid, fields))
+                return {"financial_profile": {"monthly_net_income_krw": 3000000 if self.uid == owner else 1000000}}
+        memory = Mock(spec=["search_memory", "save_memory"])
+        def search(request, *, authenticated_user_id):
+            return self._result(self._item("owner" if authenticated_user_id == str(owner) else "other"))
+        memory.search_memory.side_effect = search
+        profile_module = ModuleType("agent.profile.profile_db_service")
+        profile_module.ProfileDBService = ProfileService
+        memory_module = ModuleType("agent.memory.postgres_memory_service")
+        memory_module.PostgresMemoryService = lambda: memory
+        prepare_module = ModuleType("agent.profile.profile_agent")
+        prepare_module.run_profile_agent = lambda _: {"profile": {}, "missing_info": [], "changes": []}
+        with patch.dict(sys.modules, {profile_module.__name__: profile_module, memory_module.__name__: memory_module,
+                                     prepare_module.__name__: prepare_module}):
+            with self.assertRaises(TypeError):
+                bind_authenticated_ports(authenticated_user_id=str(owner))
+            ports_a = bind_authenticated_ports(authenticated_user_id=owner)
+            ports_b = bind_authenticated_ports(authenticated_user_id=other)
+            fields = ["financial_profile.monthly_net_income_krw"]
+            self.assertEqual(ports_a.get_profile_fields(fields)["financial_profile"]["monthly_net_income_krw"], 3000000)
+            self.assertEqual(ports_b.get_profile_fields(fields)["financial_profile"]["monthly_net_income_krw"], 1000000)
+            self.assertEqual(ports_a.retrieve_memory({"query": "대출"})["retrieved"][0]["memory_id"], "owner")
+            self.assertEqual(ports_b.retrieve_memory({"query": "대출"})["retrieved"][0]["memory_id"], "other")
+            self.assertIsNotNone(ports_a.profile_agent)
+        self.assertEqual([r[0] for r in reads], [owner, other])
+        self.assertEqual([c.kwargs["authenticated_user_id"] for c in memory.search_memory.call_args_list], [str(owner), str(other)])
+        memory.save_memory.assert_not_called()
+
+    def test_actual_postgres_search_contract_if_installed(self):
+        # 실제 팀 PostgreSQL 서비스의 search_memory를 연결하되 연결/커서만 대체한다.
+        from uuid import uuid4
+        from unittest.mock import MagicMock
+        from importlib import import_module
+        try:
+            module = import_module("agent.memory.postgres_memory_service")
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"agent.memory", "agent.memory.postgres_memory_service", "psycopg", "dotenv"}:
+                raise
+            self.skipTest("팀 PostgreSQL Memory 모듈 및 드라이버가 필요합니다.")
+        from ..tools.integration import memory_ports
+        service = module.PostgresMemoryService.__new__(module.PostgresMemoryService)
+        service.connection_config = {"host": "unit-test-only"}
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        uid, mid = uuid4(), uuid4()
+        cursor.fetchall.return_value = [{**self._item(kind="user_decision", metadata=None), "memory_id": mid, "target_ref": None}]
+        with patch.object(module.psycopg, "connect", return_value=connection) as connect:
+            _, detail = memory_ports(service, authenticated_user_id=str(uid))
+            result = detail({"query": "대출", "limit": 3, "memory_types": ["user_decision"]})
+            self.assertEqual(result["retrieved"][0]["memory_id"], str(mid))
+            self.assertEqual(result["retrieved"][0]["metadata"], {})
+            connect.assert_called_once_with(host="unit-test-only")
+            sql, params = cursor.execute.call_args.args
+            self.assertIn("WHERE user_id = %s", sql)
+            self.assertIn("ORDER BY created_at DESC LIMIT %s", sql)
+            self.assertEqual(params, [str(uid), "대출", ["user_decision"], 3])
+
+
+class V29StabilityTests(unittest.TestCase):
+    """Same-revision retry, server-owned defaults and context minimization."""
+
+    @staticmethod
+    def _decision():
+        return {"kind": "submit_plan", "reason": "독립 자금 계획",
+                "intent": {"purpose": "대출과 지원을 반영한 독립 자금 계획", "operation": "new"},
+                "execution_plan": {"tasks": [
+                    {"task_id": "policy", "agent": "policy", "objective": "지원 조사", "depends_on": []},
+                    {"task_id": "product", "agent": "product", "objective": "대출 조사", "depends_on": []},
+                    {"task_id": "fund", "agent": "fund", "objective": "현금흐름 계산", "depends_on": ["policy", "product"]},
+                    {"task_id": "roadmap", "agent": "fund", "objective": "장기 전망", "depends_on": ["fund"]},
+                ]}}
+
+    def _run(self, source, decision=None):
+        d = decision if decision is not None else self._decision()
+        return Supervisor(decide=lambda _: deepcopy(d), max_repairs=0).run(source, use_graph=False)
+
+    def _executing(self):
+        source = SuppliedValuesRegressionTests._source()
+        out = self._run(source)
+        source = {**source, **out.update, "phase": "executing"}
+        tasks = source["execution_plan"]["tasks"]
+        for t, status, run in zip(tasks, ("completed", "failed", "skipped", "skipped"), ("r_policy", "r_product", None, None)):
+            t.update(status=status, run_id=run)
+        source["agent_results"] = {t["task_id"]: self._output(t, source["execution_plan"]["revision"])
+                                   for t in tasks if t["run_id"]}
+        source["review_results"] = {"policy": {"target_run_id": "r_policy", "evidence": {"status": "passed"},
+                                                 "reflection": {"status": "passed"}}}
+        return source
+
+    @staticmethod
+    def _output(task, revision):
+        return {"task_id": task["task_id"], "run_id": task["run_id"], "plan_revision": revision,
+                "scenario_id": task.get("scenario_id"), "status": task["status"], "summary": "test-only result",
+                "data": {"candidates": []}, "evidence_refs": [], "warnings": ["transient_error"] if task["status"] == "failed" else [],
+                "needed_fields": []}
+
+    def test_missing_defaults_first_pass_http_and_schema(self):
+        from ..llm.adapter import DecisionSchema
+        d = {"kind": "submit_plan", "reason": "원금 계산", "intent": {"purpose": "월 50만 원 24개월 원금", "operation": "new"},
+             "execution_plan": {"tasks": [{"task_id": "fund", "agent": "fund", "objective": "이자 제외 50만 원×24개월 계산"}]}}
+        raw = {"status": "completed", "output": [{"type": "function_call", "name": "supervisor_decision", "arguments": json.dumps(d)}]}
+        trace = []
+        with patch("agent.supervisor.llm.openai_api.urlopen", return_value=BytesIO(json.dumps(raw).encode())):
+            decider = OpenAIDecider("test-key", "test-model")
+            out = Supervisor(decide=decider, max_repairs=0, trace_sink=trace.append).run({"phase": "planning"}, use_graph=False)
+        self.assertEqual(decider.calls, 1)
+        self.assertEqual(out.update["intent"]["supplied_values"], {})
+        self.assertEqual(out.update["intent"]["profile_update_status"], "not_needed")
+        self.assertEqual(out.next_node, "plan_validator")
+        self.assertNotIn("profile_update_status", DecisionSchema.model_json_schema()["$defs"]["IntentDraftSchema"]["properties"])
+        self.assertIn("retry_task_ids", DecisionSchema.model_json_schema()["properties"])
+        self.assertFalse(any(e.get("output", {}).get("retry") for e in trace))
+
+    def test_missing_values_preserve_previous_and_merge_explicit_values(self):
+        src = SuppliedValuesRegressionTests._source()
+        src["intent"] = {"supplied_values": {"monthly_net_income_krw": 2500000}, "profile_update_status": "done"}
+        before = deepcopy(src)
+        self.assertEqual(self._run(src).update["intent"]["supplied_values"], {"monthly_net_income_krw": 2500000})
+        d = self._decision()
+        d["intent"]["supplied_values"] = {"monthly_debt_payment_krw": 0}
+        out = self._run(src, d)
+        self.assertEqual(out.update["intent"]["supplied_values"], {"monthly_net_income_krw": 2500000, "monthly_debt_payment_krw": 0})
+        self.assertEqual(out.update["intent"]["profile_update_status"], "done")
+        self.assertEqual(src, before)
+
+    def test_explicit_bad_values_still_rejected(self):
+        for key, value in (("supplied_values", []), ("supplied_values", None), ("profile_update_status", "applied")):
+            d = self._decision(); d["intent"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(SupervisorContractError):
+                validate_decision(d)
+        d = self._decision(); d["intent"].pop("purpose")
+        with self.assertRaises(SupervisorContractError):
+            validate_decision(d)
+        d = self._decision(); d["intent"]["profile_update_status"] = "done"
+        with self.assertRaisesRegex(SupervisorContractError, "직접 선언"):
+            self._run(SuppliedValuesRegressionTests._source(), d)
+
+    def test_existing_approval_cannot_be_bypassed_by_model_default(self):
+        source = SuppliedValuesRegressionTests._source()
+        source["financial_profile_changes"] = [{"change_id": "change1", "field": "monthly_net_income_krw", "value": 3000000, "status": "needs_confirmation"}]
+        for status in (None, "not_needed", "done"):
+            d = self._decision()
+            if status is not None:
+                d["intent"]["profile_update_status"] = status
+            with self.subTest(status=status), self.assertRaises(SupervisorContractError):
+                self._run(source, d)
+        ask = {"kind": "ask_user", "reason": "저장 승인", "intent": {"purpose": "변경 승인", "operation": "new"},
+               "pending_input": [{"question": "변경을 승인할까요?", "fields": ["approval"], "target": "supervisor"}]}
+        out = self._run(source, ask)
+        self.assertEqual(out.next_node, "ask_user")
+        self.assertEqual(out.update["intent"]["profile_update_status"], "waiting")
+        self.assertNotIn("financial_profile", out.update)
+
+    def test_selective_retry_same_plan_keeps_completed_independent_run(self):
+        source = self._executing(); before = deepcopy(source)
+        seen = []
+        d = self._decision(); d["retry_task_ids"] = ["product"]
+        def decide(ctx):
+            seen.append(deepcopy(ctx))
+            return deepcopy(d)
+        out = Supervisor(decide=decide, max_repairs=0).run(source, use_graph=False)
+        plan = out.update["execution_plan"]
+        self.assertEqual(plan["revision"], source["execution_plan"]["revision"])
+        self.assertEqual([(t["task_id"], t["status"], t["run_id"]) for t in plan["tasks"]],
+                         [("policy", "completed", "r_policy"), ("product", "pending", None), ("fund", "pending", None), ("roadmap", "pending", None)])
+        self.assertEqual(seen[0]["replan_context"]["execution_retry_task_ids"], ["product"])
+        self.assertEqual(seen[0]["main_state"]["agent_results"]["product"]["warnings"], ["transient_error"])
+        self.assertEqual(source, before)
+        self.assertNotIn("retry_task_ids", out.update)
+        self.assertNotIn("agent_results", out.update)
+        self.assertNotIn("review_results", out.update)
+
+    def test_same_plan_without_explicit_retry_retains_failure(self):
+        source = self._executing()
+        plan = self._run(source).update["execution_plan"]
+        self.assertEqual(plan, source["execution_plan"])
+
+    def test_retry_invalid_scope_and_needs_input_rejected(self):
+        for ids in (["policy"], ["fund"], ["missing"], ["product", "product"]):
+            d = self._decision(); d["retry_task_ids"] = ids
+            with self.subTest(ids=ids), self.assertRaises(SupervisorContractError):
+                self._run(self._executing(), d)
+        for phase, status in (("planning", "failed"), ("executing", "needs_input")):
+            source = self._executing(); source["phase"] = phase; source["execution_plan"]["tasks"][1]["status"] = status
+            d = self._decision(); d["retry_task_ids"] = ["product"]
+            with self.subTest(phase=phase, status=status), self.assertRaises(SupervisorContractError):
+                self._run(source, d)
+        with self.assertRaises(SupervisorContractError):
+            validate_decision({"kind": "ask_user", "reason": "확인", "retry_task_ids": ["product"]})
+
+    def test_real_plan_or_input_change_invalidates_entire_revision(self):
+        for change in ("objective", "supplied_values"):
+            src = self._executing(); d = self._decision()
+            if change == "objective":
+                d["execution_plan"]["tasks"][1]["objective"] = "다른 대출 범위 조사"
+            else:
+                d["intent"]["supplied_values"] = {"monthly_net_income_krw": 2900000}
+            out = self._run(src, d)
+            plan = out.update["execution_plan"]
+            self.assertEqual(plan["revision"], src["execution_plan"]["revision"] + 1)
+            self.assertTrue(all(t["status"] == "pending" and t["run_id"] is None for t in plan["tasks"]))
+
+    def test_review_retries_only_rejected_and_downstream_current_run(self):
+        source = self._executing(); plan = source["execution_plan"]
+        for t in plan["tasks"]:
+            t.update(status="completed", run_id="run_" + t["task_id"])
+        source["agent_results"] = {t["task_id"]: self._output(t, plan["revision"]) for t in plan["tasks"]}
+        source["review_results"] = {"product": {"target_run_id": "run_product", "reflection": {"status": "revise", "issues": ["대출 조건 검토"]}},
+                                    "policy": {"target_run_id": "stale", "reflection": {"status": "revise", "issues": ["stale"]}}}
+        new = self._run(source).update["execution_plan"]
+        self.assertEqual(new["revision"], plan["revision"])
+        self.assertEqual(new["review_retry_count"], 1)
+        self.assertEqual(new["tasks"][0]["run_id"], "run_policy")
+        self.assertTrue(all(t["status"] == "pending" and t["run_id"] is None for t in new["tasks"][1:]))
+        plan["review_retry_count"] = 1
+        with self.assertRaisesRegex(SupervisorContractError, "1회 상한"):
+            self._run(source)
+        # Stale result is not a current review rejection.
+        source["agent_results"]["product"]["plan_revision"] = plan["revision"] + 1
+        self.assertEqual(self._run(source).update["execution_plan"], plan)
+
+    def test_loaded_amount_context_is_bounded_and_deduplicated(self):
+        from ..nodes.reason import build_context
+        src = SuppliedValuesRegressionTests._source()
+        src["basic_profile"] = {"birth_date": "1999-01-01", "goals": []}
+        src["financial_profile"].update(holdings=[], liabilities=[], total_debt_krw=None)
+        src["intent"] = {"supplied_values": {"monthly_net_income_krw": 2700000}}
+        obs = [{"name": "profile_agent", "request": {"operation": "inspect", "fields": ["financial_profile.available_assets_krw"]},
+                "result": {"profile": {"financial_profile": {"available_assets_krw": 5000000}}, "field_status": {"financial_profile.available_assets_krw": "available"}}}]
+        state = {"source": src, "observations": obs}; before = deepcopy(state)
+        ctx = build_context(Supervisor(decide=lambda _: {}), state, 2)
+        self.assertEqual(ctx["loaded_planning_amounts"], {"monthly_living_expenses_krw": 1500000, "monthly_debt_payment_krw": 0})
+        self.assertNotIn("basic_profile", ctx["main_state"])
+        self.assertNotIn("financial_profile", ctx["main_state"])
+        self.assertEqual(state, before)
+
+    def test_parent_normalize_current_compatibility_if_available(self):
+        try:
+            from agent.workflow_control import normalize_current, required_upstream, select_wave
+        except ModuleNotFoundError as exc:
+            if exc.name != "agent.workflow_control":
+                raise
+            self.skipTest("최신 상위 workflow_control.py가 있는 프로젝트에서 실행")
+        src = self._executing(); d = self._decision(); d["retry_task_ids"] = ["product"]
+        plan = self._run(src, d).update["execution_plan"]
+        plan, results, reviews = normalize_current(plan, src["agent_results"], src["review_results"])
+        self.assertEqual(list(results), ["policy"])
+        self.assertEqual(list(reviews), ["policy"])
+        self.assertEqual(select_wave(plan, {"policy", "product", "fund"}), [("product", "execute")])
+        with self.assertRaises(SupervisorContractError):
+            required_upstream(plan, results, plan["tasks"][2])

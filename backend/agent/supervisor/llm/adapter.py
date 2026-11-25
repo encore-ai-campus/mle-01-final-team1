@@ -6,6 +6,7 @@ import json
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, ConfigDict, WithJsonSchema
+from pydantic.json_schema import SkipJsonSchema
 
 from .prompts import SYSTEM_PROMPT
 from ..tools.profile_fields import READ_FIELDS, overlay_json_schema
@@ -88,8 +89,9 @@ class IntentDraftSchema(BaseModel):
     operation: Literal["new", "continue", "revise", "compare", "explain"] | None = None
     analysis_mode: Literal["candidate_compare", "strategy_compare", "roadmap"] | None = None
     strategy_preference: Any = None
-    supplied_values: SuppliedValuesSchema | None = Field(default=None, description="이번에 명시한 실제 프로필 값만(평면 키). 상담 목표 금액/기간은 purpose와 objective. 없으면 {}.")
-    profile_update_status: Literal["not_needed", "pending", "waiting", "done"] | None = None
+    supplied_values: SuppliedValuesSchema | None = Field(default=None, description="새 실제 프로필 값(평면 키), 없으면 생략")
+    # Legacy responses remain readable; approval status is not a model output field.
+    profile_update_status: SkipJsonSchema[Literal["not_needed", "pending", "waiting", "done"] | None] = None
     target_advice_ref: str | None = None
 
 
@@ -103,6 +105,7 @@ class DecisionSchema(BaseModel):
     execution_plan: PlanDraftSchema | None = None
     scenario_state: ScenarioDraftSchema | None = Field(default=None, description="submit_plan과 함께 제출할 분기 초안")
     selected_scenario_id: str | None = Field(default=None, description="이전 상담에서 선택한 분기 ID")
+    retry_task_ids: list[str] | None = Field(default=None, min_length=1, max_length=12, description="재실행이 필요한 현재 failed 작업 ID만")
     pending_input: list[PendingQuestionSchema] | None = Field(default=None, description="ask_user만: 질문 초안; 답변 및 해결 상태 금지")
     goal_mode: Literal["merge", "replace"] | None = None
 

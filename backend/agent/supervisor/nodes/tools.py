@@ -6,7 +6,7 @@ from ..contracts import SupervisorContractError
 from ..state import SupervisorWorkingState
 from ..tools.ports import (
     normalize_profile_result,
-    validate_memory_request, validate_profile_request,
+    memory_request_key, validate_memory_request, validate_profile_request,
 )
 from ..tools.scenarios import prepare_verified_scenarios
 from ..tools.memory import call_memory, merge_memory
@@ -51,7 +51,18 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
                         raise SupervisorContractError("Profile changes require an explicit non-temporary change_requested")
     elif name == "retrieve_memory":
         validate_memory_request(args)
-        cached = next((obs["result"] for obs in reversed(state.get("observations", [])) if obs["name"] == name and obs.get("request") == args), None)
+        key = memory_request_key(args)
+        cached = None
+        for obs in reversed(state.get("observations", [])):
+            if obs["name"] != name:
+                continue
+            try:
+                old_key = memory_request_key(obs.get("request") or {})
+            except SupervisorContractError:
+                continue
+            if old_key == key:
+                cached = obs["result"]
+                break
         if merge_memory(state["source"], state.get("observations", [])).get("retrieval_status") == "access_denied":
             result = {"retrieval_status": "access_denied", "retrieved": []}
         elif cached is not None:
