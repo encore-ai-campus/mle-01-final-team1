@@ -31,7 +31,7 @@ ROUTES = {'plan_validator', 'ask_user', 'final_advice'}
 DIMENSIONS = {'intent': 25, 'profile_and_clarification': 20, 'assignment': 25,
               'constraints_and_context': 20, 'efficiency': 10}
 USAGE_KEYS = ('input_tokens', 'output_tokens', 'total_tokens', 'cached_input_tokens', 'reasoning_tokens')
-EVAL_VERSION = 'v23_requirement_coverage'
+EVAL_VERSION = 'v26_diverse_paths'
 EVIDENCE_SCOPES = {'plan', 'clarification'}
 
 

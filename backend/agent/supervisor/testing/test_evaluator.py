@@ -46,7 +46,24 @@ class EvaluatorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # The editable question file is user data; self-tests use the fixed reference suite.
-        cls.cases={c['id']:{**c,'criteria_mode':'reference'} for c in load_cases()}
+        cls.active_cases={c['id']:{**c,'criteria_mode':'reference'} for c in load_cases()}
+        cls.cases=deepcopy(cls.active_cases)
+        # Legacy evaluator checks remain offline fixtures, not live evaluation questions.
+        cls.cases['G-01']={**deepcopy(cls.cases['F-02']), 'id':'G-01','profile':'complete'}
+        cls.cases['G-01']['turns'][0]['question']='지금 내 수입과 지출로 앞으로 3년 저축 계획을 세워 줘. 상품과 정책 추천은 필요 없어.'
+        cls.cases['G-01']['turns'][0]['review']='현재 재무 상황을 활용한 Fund 단독 계획'
+        cls.cases['G-01']['turns'][0]['requirements']=[{'id':'cashflow','description':'현재 재무 정보에 근거한 저축 계획; 상품 및 정책 추천 제외'}]
+        cls.cases['G-03']={'id':'G-03','profile':'complete','criteria_mode':'reference','turns':[
+            {'question':'2년 안에 2천만 원을 모을 수 있을까? 적금도 추천해 줘.',
+             'routes':['plan_validator'],'required_agents':['fund','product'],
+             'allowed_agents':['fund','product'],'branch_count':[0,1],
+             'review':'재무 계획과 상품 탐색; 실행 순서는 고정하지 않음', 'no_save':True,
+             'requirements':[
+                 {'id':'target_amount','description':'2천만 원 목표 보존',
+                  'evidence':{'scope':'plan','any_of':[r'(?<!\d)20000000(?:원)?(?!\d)',r'(?<!\d)2000만(?:원)?(?!\d)',r'(?<!\d)2천만(?:원)?(?!\d)']}},
+                 {'id':'target_period','description':'2년/24개월 보존',
+                  'evidence':{'scope':'plan','any_of':[r'(?<!\d)2년(?!\d)',r'(?<!\d)24개월(?!\d)']}}
+             ]}]}
 
     def run_script(self,cid,decisions,**kwargs):
         decider=ScriptedDecider(decisions)
@@ -54,15 +71,15 @@ class EvaluatorTests(unittest.TestCase):
         return records,decider
 
     def test_dataset_and_fixtures(self):
-        self.assertEqual(len(self.cases),9)
-        self.assertEqual(sum(len(c['turns']) for c in self.cases.values()),10)
+        self.assertEqual(len(self.active_cases),6)
+        self.assertEqual(sum(len(c['turns']) for c in self.active_cases.values()),7)
         self.assertTrue(all(c['criteria_mode']=='reference' for c in self.cases.values()))
         self.assertTrue(all(t.get('requirements') and not t.get('task_chains') and not t.get('dependencies')
                             for c in self.cases.values() for t in c['turns']))
         for case in self.cases.values():
             with self.subTest(case=case['id']):
                 profile_fixture(case)
-        p=profile_fixture(self.cases['T-03']); service=FixtureServices(p)
+        p=profile_fixture({'id':'UNIT-CONTRACT','profile':'contract'}); service=FixtureServices(p)
         result=service.read(['financial_profile.holdings'])
         self.assertEqual(result['baseline_ref'],'eval_baseline_01')
         self.assertEqual(result['profile']['financial_profile']['holdings'][0]['holding_id'],'eval_savings')
@@ -80,11 +97,11 @@ class EvaluatorTests(unittest.TestCase):
                 {'id': c['id'], 'profile': c['profile'],
                  'profile_override': c.get('profile_override', {}),
                  'questions': [t['question'] for t in c['turns']]}
-                for c in self.cases.values()
+                for c in self.active_cases.values()
             ], ensure_ascii=False), encoding='utf-8')
             with patch('agent.supervisor.supervisor_test.OpenAIDecider.from_env', side_effect=AssertionError('list must not call API')):
                 for args, expected in [(['--list'], '실행 예정 3턴'),
-                                       (['--suite','all','--list'], '실행 예정 10턴'),
+                                       (['--suite','all','--list'], '실행 예정 7턴'),
                                        (['--case','E-01','--list','--judge'], '실행 예정 2턴')]:
                     with self.subTest(args=args), redirect_stdout(StringIO()) as out:
                         self.assertEqual(main(['--questions-file', str(path), *args]),0)
@@ -93,8 +110,28 @@ class EvaluatorTests(unittest.TestCase):
                         if args==['--list']:
                             self.assertIn('Supervisor 호출 상한 12회',text)
                             self.assertIn('채점 호출 상한 0회',text)
+                        if args==['--suite','all','--list']:
+                            self.assertIn('Supervisor 호출 상한 28회',text)
+                            self.assertEqual(text.count('| reference]'),7)
                         if '--judge' in args:
                             self.assertIn('채점 호출 상한 2회',text)
+
+    def test_diverse_reference_routes(self):
+        # New single-agent reference cases must accept only their own role.
+        for cid, role, wrong in [('P-01','product','policy'),('P-02','policy','product')]:
+            with self.subTest(case=cid):
+                rows,_=self.run_script(cid,[decision([task('only',role)])])
+                self.assertTrue(rows[0]['structural_pass'],rows[0].get('checks'))
+                rows,_=self.run_script(cid,[decision([task('only',role),task('extra',wrong)])])
+                self.assertFalse(rows[0]['structural_pass'])
+                self.assertIn('allowed_agents',[x['name'] for x in rows[0]['checks'] if not x['passed']])
+        self.assertEqual(set(self.active_cases),{'B-07','C-05','F-02','P-01','P-02','E-01'})
+        # A three-role plan may use different orders or independent work; semantic fit is judged separately.
+        for tasks in ([task('p','product'),task('q','policy'),task('f','fund',['p','q'])],
+                      [task('f','fund'),task('p','product',['f']),task('q','policy')],
+                      [task('p','product'),task('q','policy'),task('f','fund')]):
+            rows,_=self.run_script('B-07',[decision(tasks)])
+            self.assertTrue(rows[0]['structural_pass'],rows[0].get('checks'))
 
     def test_fund_only_and_gold_isolated(self):
         records,decider=self.run_script('F-02',[decision([task('fund','fund')])])
@@ -147,7 +184,7 @@ class EvaluatorTests(unittest.TestCase):
                       ([task('p','product'),task('f','fund',['p'])],[['p'],['f']]),
                       ([task('p','product'),task('f','fund')],None),
                       ([task('f','fund'),task('p','product',['f']),task('f_last','fund',['p'])],[['f'],['p'],['f_last']])]
-        for cid in ('G-02','G-03'):
+        for cid in ('G-03',):
             for tasks,waves in alternatives:
                 with self.subTest(case=cid,tasks=tasks):
                     rows,_=self.run_script(cid,[decision(tasks)])
@@ -175,18 +212,18 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(profile_fixture(c)['financial_profile']['monthly_net_income_krw'],2800000)
 
     def test_dependencies_and_budget(self):
-        records,_=self.run_script('B-06',[decision([task('p','product'),task('q','policy'),task('f','fund',['p','q'])])])
+        records,_=self.run_script('B-07',[decision([task('p','product'),task('q','policy'),task('f','fund',['p','q'])])])
         r=records[0]
         self.assertTrue(r['structural_pass'],r.get('checks'))
         self.assertEqual(r['candidate_limits'],{'product':3,'policy':3})
-        custom=deepcopy(self.cases['B-06'])
+        custom=deepcopy(self.cases['B-07'])
         custom['turns'][0]['dependencies']=[['policy','fund']]
         records=run_case(custom,ScriptedDecider([decision([task('p','product'),task('q','policy'),task('f','fund',['p'])])]),use_graph=False)
         self.assertIn('dependency_policy_to_fund',[c['name'] for c in records[0]['checks'] if not c['passed']])
 
     def test_clarification_and_wrong_route(self):
-        ask={'kind':'ask_user','reason':'상품 특정 필요','pending_input':[{'question':'어떤 상품을 말씀하시나요?','fields':['product_ref'],'target':'supervisor'}]}
-        rows,_=self.run_script('C-04',[ask])
+        ask={'kind':'ask_user','reason':'개인 지출 확인 필요','pending_input':[{'question':'매달 생활비와 대출 상환액은 얼마인가요?','fields':['financial_profile.monthly_living_expenses_krw','financial_profile.monthly_debt_payment_krw'],'target':'profile'}]}
+        rows,_=self.run_script('C-05',[ask])
         self.assertEqual(rows[0]['status'],'executed',rows[0].get('error'))
         self.assertTrue(rows[0]['structural_pass'],rows[0]['checks'])
         rows,_=self.run_script('F-02',[ask])
@@ -194,7 +231,7 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(rows[0]['route'],'ask_user')
 
     def test_selected_scenario_chain(self):
-        branches=[{'id':sid,'label':label,'overrides':{},'assumptions':{'horizon_months':36,'allocation_pct':{'repay':ratio,'save':100-ratio}}}
+        branches=[{'id':sid,'label':label,'overrides':{},'assumptions':{'horizon_months':12,'allocation_pct':{'repay':ratio,'save':100-ratio}}}
                   for sid,label,ratio in [('a','대출 상환',100),('b','예금 가입',0),('c','혼합',50)]]
         first=decision([task('f_a','fund',sid='a'),task('p_b','product',sid='b'),task('f_b','fund',['p_b'],'b'),task('p_c','product',sid='c'),task('f_c','fund',['p_c'],'c')],
                        intent=intent('compare',analysis_mode='strategy_compare'),scenario_state={'scenarios':branches})
@@ -261,16 +298,16 @@ class EvaluatorTests(unittest.TestCase):
         wrong=evidence_checks(turn,{'intent':{'purpose':'12년 안에 120000000원'}},'plan_validator')
         self.assertEqual(wrong['match_pct'],0.0)
         self.assertIsNone(evidence_checks(turn,{},'ask_user')['match_pct'])
-        self.assertIsNone(evidence_checks(self.cases['B-06']['turns'][0],{},'ask_user')['match_pct'])
+        self.assertIsNone(evidence_checks(self.cases['B-07']['turns'][0],{},'ask_user')['match_pct'])
         validate_requirements(turn['requirements'])
         with self.assertRaises(ValueError): validate_requirements(turn['requirements']+[turn['requirements'][0]])
         self.assertEqual(evidence_checks(turn,{'execution_plan':{'tasks':None}},'plan_validator')['match_pct'],0.0)
 
     def test_plan_and_clarification_denominators(self):
-        ask={'kind':'ask_user','reason':'상품 특정 필요','pending_input':[{'question':'어떤 상품을 말씀하시나요?','fields':['product_ref'],'target':'supervisor'}]}
+        ask={'kind':'ask_user','reason':'개인 지출 확인 필요','pending_input':[{'question':'매달 생활비와 대출 상환액은 얼마인가요?','fields':['financial_profile.monthly_living_expenses_krw','financial_profile.monthly_debt_payment_krw'],'target':'profile'}]}
         successful,_=self.run_script('G-03',[decision([task('f','fund'),task('p','product')])])
         unnecessary,_=self.run_script('G-03',[ask])
-        clarified,_=self.run_script('C-04',[ask])
+        clarified,_=self.run_script('C-05',[ask])
         rows=successful+unnecessary+clarified
         totals=summary(rows)
         self.assertEqual(totals['plan_generation_success_pct_recorded'],50.0)
