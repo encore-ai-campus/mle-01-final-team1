@@ -34,8 +34,8 @@ def default_output_dir() -> Path:
 
 def main(argv: list[str] | None=None) -> int:
     parser=argparse.ArgumentParser(description='Supervisor 실제 LLM 계획 평가 (기본: 앞 3개 사례, 의미 채점 OFF)')
-    parser.add_argument('--suite',default='quick',help='quick: 질문 파일 앞 3개 사례(기본), all: 전체, hard/T: 고난도, 또는 ID 앞 그룹(B/C/E/F/G 등)')
-    parser.add_argument('--case',nargs='+',help='선택 ID (예: T-01 E-01 F-01). suite보다 우선')
+    parser.add_argument('--suite',default='quick',help='quick: 질문 파일 앞 3개 사례(기본), all: 전체, ID 앞 그룹(B/C/E/F/P 등)')
+    parser.add_argument('--case',nargs='+',help='선택 ID (예: B-07 E-01 F-02). suite보다 우선')
     inputs=parser.add_mutually_exclusive_group()
     inputs.add_argument('--questions-file',type=Path,default=QUESTIONS_PATH,help='편집용 질문 JSON (기본 testing/eval_questions.json)')
     inputs.add_argument('--cases-file',type=Path,help='질문+기준을 직접 정의한 고급용 케이스 JSON')

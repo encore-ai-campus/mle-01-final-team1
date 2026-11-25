@@ -1,437 +1,121 @@
 [
   {
-    "id": "T-01",
-    "profile": "debt",
+    "id": "B-07",
+    "profile": "complete",
     "turns": [
       {
-        "question": "세후 월급은 270만 원이고 매달 생활비로 150만 원 정도 써. 대출이 800만 원 있고 모아둔 돈은 500만 원이야. 3년 안에 3천만 원을 모으고 싶은데 대출부터 갚는 게 좋을까, 청년 적금을 먼저 드는 게 좋을까?",
+        "question": "보증금 1,000만 원에 월세 60만 원인 집으로 독립하고 싶어. 지금 모은 돈으로는 보증금이 부족한데, 대출이나 청년 지원을 받을 수 있을까? 월세 외 생활비는 지금 수준으로 유지할 생각인데 독립하고 나서도 매달 저축할 여유가 있을지 궁금해.",
         "routes": [
           "plan_validator"
         ],
-        "review": "세후 소득이 명시되고 가상 프로필에 대출 금리·월 상환액이 있으므로 계획을 제출할 수 있다. 미확인 수수료·상품 자격은 조건부로 처리한다. 별도 정책 조사 필요 여부와 작업 순서는 사용자 목적에 맞게 판단한다.",
-        "required_agents": [
-          "product",
-          "fund"
-        ],
+        "review": "현재 프로필과 명시된 보증금·월세를 활용할 수 있다. 보증금 부족분에 맞는 대출, 이용 가능한 청년 지원, 독립 후 현금흐름을 검토한다. 상품/정책 조건이 미확정이면 조건부로 분석한다. 순서는 자유이며 필요한 결과만 연결한다. 단일 독립 목표를 상품별로 분기하지 않는다.",
         "allowed_agents": [
           "product",
           "policy",
           "fund"
         ],
-        "branch_count": [
-          2,
-          3
-        ],
         "requirements": [
           {
-            "id": "target_amount",
-            "description": "3천만 원 저축 목표를 반환 계획에 보존",
+            "id": "deposit",
+            "description": "보증금 1,000만 원을 초기 필요 자금으로 보존",
             "evidence": {
               "scope": "plan",
               "any_of": [
-                "(?<!\\d)30000000(?:원)?(?!\\d)",
-                "(?<!\\d)3000만(?:원)?(?!\\d)",
-                "(?<!\\d)3천만(?:원)?(?!\\d)",
-                "(?<!\\d)삼천만(?:원)?(?!\\d)"
+                "(?<!\\d)10000000(?:원)?(?!\\d)",
+                "(?<!\\d)1000만(?:원)?(?!\\d)",
+                "(?<!\\d)1천만(?:원)?(?!\\d)",
+                "(?<!\\d)천만(?:원)?(?!\\d)"
               ]
             }
           },
           {
-            "id": "target_period",
-            "description": "3년/36개월의 동일 비교 기간 보존",
+            "id": "rent",
+            "description": "월세 월 60만 원을 반복 지출로 보존",
             "evidence": {
               "scope": "plan",
               "any_of": [
-                "(?<!\\d)3년(?!\\d)",
-                "(?<!\\d)36개월(?!\\d)",
-                "\"horizon_months\":36\\b"
+                "(?<!\\d)600000(?:원)?(?!\\d)",
+                "(?<!\\d)60만(?:원)?(?!\\d)",
+                "육십만(?:원)?"
               ]
             }
           },
           {
-            "id": "net_income",
-            "description": "세후 월급 270만 원, 생활비 150만 원, 대출 800만 원, 가용자산 500만 원의 의미를 유지"
-          },
-          {
-            "id": "debt_strategy",
-            "description": "대출 우선 상환과 청년 적금 우선 전략을 독립적으로 분석하고 필요하면 혼합 전략 고려"
-          },
-          {
-            "id": "fund_comparison",
-            "description": "각 전략의 재무 결과를 동일한 기간과 기준으로 비교하도록 지시"
-          },
-          {
-            "id": "uncertainty",
-            "description": "대출 세부 조건을 기존 정보에서 확인하고 미확인 수수료·금리·자격을 확정하지 않음"
-          }
-        ],
-        "no_save": true
-      }
-    ],
-    "profile_override": {
-      "financial_profile": {
-        "monthly_net_income_krw": 2700000,
-        "monthly_living_expenses_krw": 1500000,
-        "total_debt_krw": 8000000,
-        "total_assets_krw": 5000000,
-        "available_assets_krw": 5000000,
-        "liabilities": [
-          {
-            "liability_id": "eval_debt",
-            "liability_type": "credit_loan",
-            "balance_krw": 8000000,
-            "annual_rate_pct": 6.0,
-            "monthly_payment_krw": 200000,
-            "repayment_method": "installment",
-            "status": "active"
-          }
-        ]
-      }
-    }
-  },
-  {
-    "id": "C-04",
-    "profile": "complete",
-    "turns": [
-      {
-        "question": "나도 그 청년 적금 가입할 수 있어?",
-        "routes": [
-          "ask_user"
-        ],
-        "review": "이전 상품 참조가 없는 상태다. 상품명을 특정하거나 링크를 요청하는 짧은 질문이 필요하다. 상품과 자격을 임의로 가정하거나 불필요한 검색을 하지 않는다.",
-        "allowed_agents": [],
-        "requirements": [
-          {
-            "id": "identify_product",
-            "description": "어떤 상품인지 구체적으로 확인하는 질문",
-            "evidence": {
-              "scope": "clarification",
-              "any_of": [
-                "상품명",
-                "어떤.{0,20}(?:상품|적금|계좌)",
-                "(?:링크|안내문|상품이름)"
-              ]
-            }
-          },
-          {
-            "id": "no_guess",
-            "description": "상품·가입 자격을 임의로 확정하지 않음"
-          },
-          {
-            "id": "minimal_question",
-            "description": "상품 특정에 필요한 내용만 먼저 질문하고 전문 작업을 생성하지 않음"
-          }
-        ],
-        "no_save": true
-      }
-    ]
-  },
-  {
-    "id": "G-03",
-    "profile": "complete",
-    "turns": [
-      {
-        "question": "2년 안에 2천만 원을 모으고 싶은데, 지금 내 상황에서 가능할까? 괜찮은 적금도 있으면 추천해 줘.",
-        "routes": [
-          "plan_validator"
-        ],
-        "required_agents": [
-          "fund",
-          "product"
-        ],
-        "allowed_agents": [
-          "fund",
-          "product"
-        ],
-        "branch_count": [
-          0,
-          1
-        ],
-        "review": "정답 DAG는 하나가 아니다. Fund와 Product가 목표·재무 상황을 활용하여 달성 가능성 및 적합 상품을 분석하면 된다. Fund 선행, Product 선행, 독립 병렬 후 종합, 필요시 재계산 모두 업무 목적과 데이터 의존성이 타당하면 허용한다.",
-        "requirements": [
-          {
-            "id": "target_amount",
-            "description": "2천만 원 목표 보존",
-            "evidence": {
-              "scope": "plan",
-              "any_of": [
-                "(?<!\\d)20000000(?:원)?(?!\\d)",
-                "(?<!\\d)2000만(?:원)?(?!\\d)",
-                "(?<!\\d)2천만(?:원)?(?!\\d)",
-                "(?<!\\d)이천만(?:원)?(?!\\d)"
-              ]
-            }
-          },
-          {
-            "id": "target_period",
-            "description": "2년/24개월 평가 기간 보존",
-            "evidence": {
-              "scope": "plan",
-              "any_of": [
-                "(?<!\\d)2년(?!\\d)",
-                "(?<!\\d)24개월(?!\\d)",
-                "\"horizon_months\":24\\b"
-              ]
-            }
-          },
-          {
-            "id": "profile_basis",
-            "description": "현재 가용자산 및 소득·지출·부채를 활용하여 계획"
-          },
-          {
-            "id": "feasibility",
-            "description": "목표 달성 가능성과 부족액 또는 적정 납입액 분석을 Fund에 배정"
-          },
-          {
-            "id": "suitable_savings",
-            "description": "현재 상황과 목표에 맞는 적금 탐색을 Product에 배정"
-          },
-          {
-            "id": "conditions",
-            "description": "실제 상품의 금리·가입/우대 조건과 납입 조건을 확인하고 미확인 값은 구분"
-          },
-          {
-            "id": "dependency_fit",
-            "description": "선행 결과가 필요한 작업에는 해당 의존성을 연결하며 결과 종합이 가능하게 구성"
-          }
-        ],
-        "no_save": true
-      }
-    ]
-  },
-  {
-    "id": "T-03",
-    "profile": "contract",
-    "turns": [
-      {
-        "question": "지금 월 50만 원씩 넣는 3년짜리 적금이 있는데 1년 정도 지났어. 요즘 금리가 더 높은 상품이나 정부 지원 적금이 있으면 갈아타고 싶은데, 중간에 해지해서 손해 보는 것까지 고려하면 어떻게 하는 게 좋을까?",
-        "routes": [
-          "plan_validator",
-          "ask_user"
-        ],
-        "review": "실제 계약의 정보와 중도해지 조건을 조회할 수 있는 범위에서 확인하고 유지/갈아타기 비교에 반영한다. 사용자에게만 확인 가능한 필수값이 있다면 질문할 수 있다. 별도 정책 조회는 필요할 때만 배정한다.",
-        "required_agents": [
-          "product",
-          "fund"
-        ],
-        "allowed_agents": [
-          "product",
-          "policy",
-          "fund"
-        ],
-        "branch_count": [
-          2,
-          3
-        ],
-        "requirements": [
-          {
-            "id": "monthly_contribution",
-            "description": "기존 월 납입액 50만 원 보존",
-            "evidence": {
-              "scope": "plan",
-              "any_of": [
-                "(?<!\\d)500000(?:원)?(?!\\d)",
-                "(?<!\\d)50만(?:원)?(?!\\d)",
-                "(?<!\\d)오십만(?:원)?(?!\\d)"
-              ]
-            },
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "contract_term",
-            "description": "기존 3년 계약 및 1년 경과를 보존하고 남은 기간을 고려",
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "holding_reference",
-            "description": "등록된 기존 적금을 정확히 참조하고 중도해지 손실/조건을 확인",
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "strategy_comparison",
-            "description": "유지와 신규 전환을 독립 비교하고 신규 적금 탐색",
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "eligibility",
-            "description": "정부 지원 상품 가입/우대 조건·손실 등을 확정 없이 처리",
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "necessary_clarification",
-            "description": "기존 계약·조회 가능한 정보를 먼저 활용하고 유지와 전환 판단에 꼭 필요한 미확인 사항만 질문",
-            "routes": [
-              "ask_user"
-            ]
-          }
-        ],
-        "no_save": true
-      }
-    ]
-  },
-  {
-    "id": "B-06",
-    "profile": "complete",
-    "turns": [
-      {
-        "question": "독립하고 싶은데 보증금 같은 초기 비용이 걱정이야. 도움 받을 수 있는 대출이나 청년 지원 혜택이 있을까? 독립하고 나서도 매달 저축할 수 있을지 궁금해.",
-        "routes": [
-          "plan_validator",
-          "ask_user"
-        ],
-        "review": "독립 초기 비용 및 대출·청년 지원 가능성, 이후 저축 가능액을 분석한다. 보증금·월 주거비 등 필수 입력이 부족하면 필요한 질문이나 조건부 계획을 허용한다. 검색과 계산의 순서는 결과 활용 관계에 맞게 판단한다.",
-        "required_agents": [
-          "product",
-          "policy",
-          "fund"
-        ],
-        "allowed_agents": [
-          "product",
-          "policy",
-          "fund"
-        ],
-        "branch_count": [
-          0,
-          1,
-          2,
-          3
-        ],
-        "requirements": [
-          {
-            "id": "initial_cost",
-            "description": "독립 초기 비용 및 부족한 비용 조건 확인",
-            "routes": [
-              "plan_validator"
-            ]
+            "id": "existing_cost",
+            "description": "현재 생활비를 월세 외 지출로 유지하며 이중 계산하지 않음"
           },
           {
             "id": "loan",
-            "description": "초기 자금 조달에 맞는 대출 검토",
-            "routes": [
-              "plan_validator"
-            ]
+            "description": "기존 가용자산을 고려해 보증금 부족분에 적합한 대출과 상환 조건 조사"
           },
           {
-            "id": "policy",
-            "description": "청년 지원 정책 및 조건 검토",
-            "routes": [
-              "plan_validator"
-            ]
+            "id": "support",
+            "description": "청년 주거 지원 정책 및 실제 자격·지원 조건 조사"
           },
           {
-            "id": "after_move",
-            "description": "독립 후 주거비·대출 상환액·실제 지원 여부를 고려한 저축 여력 분석",
-            "routes": [
-              "plan_validator"
-            ]
+            "id": "cashflow",
+            "description": "월세·대출 상환·확인된 지원 조건을 반영해 독립 후 저축 여력 분석"
           },
           {
             "id": "dependencies",
-            "description": "필요한 작업 간 결과 활용 관계를 명확히 하고 지원금을 확정 수입으로 가정하지 않음",
-            "routes": [
-              "plan_validator"
-            ]
-          },
-          {
-            "id": "necessary_clarification",
-            "description": "보증금·월세 등 독립 후 재무 전망에 필수적인 미확인 비용 조건만 구체적으로 질문",
-            "routes": [
-              "ask_user"
-            ]
+            "description": "대출/정책의 실제 산출 조건이 필요한 재무 분석에 해당 선행 작업을 연결하거나 조건별로 분석하도록 명시; 확정되지 않은 지원금·금리 임의 가정 금지"
           }
         ],
-        "no_save": true
+        "no_save": true,
+        "required_agents": [
+          "product",
+          "policy",
+          "fund"
+        ],
+        "branch_count": [
+          0,
+          1
+        ]
       }
     ]
   },
   {
-    "id": "E-01",
-    "profile": "debt",
+    "id": "C-05",
+    "profile": "empty",
     "turns": [
       {
-        "question": "여유자금 500만 원이 있어. 그냥 대출 갚는 데 다 쓸까, 예금에 넣을까, 아니면 반씩 나눌까?",
+        "question": "세후 월급은 250만 원이야. 생활비나 대출 상환 내역은 아직 등록하지 않았는데, 내 실제 지출 기준으로 매달 얼마까지 저축할 수 있을지 알고 싶어.",
         "routes": [
-          "plan_validator"
+          "ask_user"
         ],
-        "review": "사용자가 제시한 세 가지 자금 운용 방법은 실제 전략 비교다. 실행 순서와 검색 필요 여부는 자유롭게 판단한다. 다음 질문의 순번은 실제 표시 순서를 따른다.",
-        "required_agents": [
-          "product",
-          "fund"
-        ],
-        "allowed_agents": [
-          "product",
-          "fund"
-        ],
-        "branch_count": [
-          3
-        ],
-        "handoff": "scenarios",
+        "review": "현재 실제 저축 가능액에는 생활비와 월 부채 상환액 등 필수 정보가 필요하다. 프로필은 비어 있으며 사용자 진술의 순소득은 이미 명확하다. 필요한 누락 정보만 확인하고 임의로 0을 입력하거나 월 저축액을 확정하지 않는다.",
+        "allowed_agents": [],
         "requirements": [
           {
-            "id": "available_cash",
-            "description": "여유자금 500만 원 보존",
+            "id": "living_cost",
+            "description": "월 생활비 또는 실제 지출 확인",
             "evidence": {
-              "scope": "plan",
+              "scope": "clarification",
               "any_of": [
-                "(?<!\\d)5000000(?:원)?(?!\\d)",
-                "(?<!\\d)500만(?:원)?(?!\\d)",
-                "(?<!\\d)오백만(?:원)?(?!\\d)"
+                "생활비",
+                "지출",
+                "고정비"
               ]
             }
           },
           {
-            "id": "three_strategies",
-            "description": "전액 상환/전액 예금/반씩 배분의 세 전략 보존"
+            "id": "debt_payment",
+            "description": "월 대출/부채 상환액 또는 부채 유무 확인",
+            "evidence": {
+              "scope": "clarification",
+              "any_of": [
+                "(?:대출|부채|채무)",
+                "상환액"
+              ]
+            }
           },
           {
-            "id": "comparable",
-            "description": "동일 기간·비교 기준의 독립 재무 계획"
+            "id": "known_income",
+            "description": "이미 제시한 세후 250만 원은 재질문하지 않고 유지"
           },
           {
-            "id": "search_scope",
-            "description": "상품이 필요한 전략에만 상품 검색"
-          }
-        ],
-        "no_save": true
-      },
-      {
-        "question": "세 번째 방법이 괜찮은 것 같아. 그때 가입할 만한 상품 3개만 추천해 줘.",
-        "routes": [
-          "plan_validator"
-        ],
-        "review": "앞선 표시 순서의 세 번째 실제 전략만 복원한다. 조건을 유지하고 Product 검색 상한 3개를 지킨다. 다른 전략은 재실행하지 않는다.",
-        "required_agents": [
-          "product"
-        ],
-        "allowed_agents": [
-          "product"
-        ],
-        "branch_count": [
-          1
-        ],
-        "followup": "third_scenario",
-        "requirements": [
-          {
-            "id": "selected_branch",
-            "description": "표시된 세 번째 전략 ID·가정·조건을 정확히 복원"
-          },
-          {
-            "id": "candidate_count",
-            "description": "상품 후보 3개 이내로 요청 범위 제한"
-          },
-          {
-            "id": "no_other_branch",
-            "description": "선택하지 않은 전략을 재실행하지 않음"
+            "id": "minimal_missing",
+            "description": "필수 현금흐름 정보에 한정하여 질문하고 금융상품 탐색이나 저장을 실행하지 않음"
           }
         ],
         "no_save": true
@@ -496,89 +180,195 @@
     ]
   },
   {
-    "id": "G-01",
-    "profile": "complete",
+    "id": "P-01",
+    "profile": "empty",
     "turns": [
       {
-        "question": "앞으로 3년 동안 돈을 꾸준히 모으고 싶은데 지금 내 수입이나 지출을 생각하면 어떻게 관리해야 할까? 금융상품이나 정책 추천은 필요 없어.",
+        "question": "여유자금 500만 원을 1년 동안 넣어둘 만한 정기예금 세 개 추천해 줘. 우대조건 없이 받을 수 있는 기본금리가 중요해.",
         "routes": [
           "plan_validator"
         ],
-        "required_agents": [
-          "fund"
-        ],
+        "review": "금융상품 정보 조회만 필요한 요청이다. 일반적인 예금 후보와 기본금리·조건을 조사하면 되며, 개인 재무설계나 정책 조사 및 프로필 확인은 필요하지 않다. 후보와 전략 시나리오를 구분한다.",
         "allowed_agents": [
-          "fund"
+          "product"
         ],
-        "branch_count": [
-          0,
-          1
-        ],
-        "review": "실제 가상 프로필을 활용하여 3년 재무 계획을 작성한다. 상품과 정책 추천 제외는 명시적 제약이다.",
         "requirements": [
           {
-            "id": "period",
-            "description": "3년/36개월 계획 기간 보존",
+            "id": "principal",
+            "description": "예치금 500만 원 보존",
             "evidence": {
               "scope": "plan",
               "any_of": [
-                "(?<!\\d)3년(?!\\d)",
-                "(?<!\\d)36개월(?!\\d)",
-                "\"horizon_months\":36\\b"
+                "(?<!\\d)5000000(?:원)?(?!\\d)",
+                "(?<!\\d)500만(?:원)?(?!\\d)",
+                "오백만(?:원)?"
               ]
             }
           },
           {
-            "id": "cashflow",
-            "description": "현재 수입·생활비·부채를 고려한 저축 계획"
+            "id": "term",
+            "description": "1년/12개월 계약 조건 보존",
+            "evidence": {
+              "scope": "plan",
+              "any_of": [
+                "(?<!\\d)1년(?!\\d)",
+                "(?<!\\d)12개월(?!\\d)",
+                "\"term_months\":12\\b"
+              ]
+            }
           },
           {
-            "id": "no_search",
-            "description": "상품과 정책을 추천하거나 검색하지 않음"
+            "id": "base_rate",
+            "description": "우대금리가 아니라 조건 없는 기본금리 중심으로 비교"
+          },
+          {
+            "id": "limit",
+            "description": "정기예금 후보 최대 3개와 적용 조건 확인; 상품별 분기나 재무 계산 없음"
           }
         ],
-        "no_save": true
+        "no_save": true,
+        "required_agents": [
+          "product"
+        ],
+        "branch_count": [
+          0
+        ]
       }
     ]
   },
   {
-    "id": "G-02",
+    "id": "P-02",
     "profile": "complete",
     "turns": [
       {
-        "question": "매달 얼마씩 저축하는 게 부담 없을까? 그 정도로 가입할 만한 적금도 세 개 정도 추천해 줘.",
+        "question": "광명에서 자취 중인 직장인인데 청년 월세 지원을 받을 수 있을까? 대출 말고 지금 신청할 수 있는 지원금이나 주거비 지원 정책이 궁금해.",
         "routes": [
           "plan_validator"
         ],
+        "review": "정책/지원 자격 정보만 요청한다. 지역과 재직 상태, 확인 가능한 프로필을 사용해 지원금 및 신청 조건을 조사한다. 추가 자격 정보가 없으면 조건을 명시하여 조사하도록 계획할 수 있다. 대출·예금·적금 추천이나 현금흐름 계산은 필요하지 않다.",
+        "allowed_agents": [
+          "policy"
+        ],
+        "requirements": [
+          {
+            "id": "region",
+            "description": "광명시 거주 조건을 반영",
+            "evidence": {
+              "scope": "plan",
+              "any_of": [
+                "광명"
+              ]
+            }
+          },
+          {
+            "id": "policy_scope",
+            "description": "청년 월세·주거비 지원 정책과 신청 가능 시기, 자격 요건 확인"
+          },
+          {
+            "id": "no_loan",
+            "description": "대출·금융상품 검색 및 재무설계 제외"
+          },
+          {
+            "id": "eligibility",
+            "description": "프로필 기반 자격 확인과 미확인 조건 구분; 지원 가능 여부나 지원금을 확정하지 않음"
+          }
+        ],
+        "no_save": true,
         "required_agents": [
-          "fund",
+          "policy"
+        ],
+        "branch_count": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "id": "E-01",
+    "profile": "debt",
+    "turns": [
+      {
+        "question": "앞으로 1년 정도 여유자금 500만 원을 어떻게 쓰면 좋을지 고민이야. 전부 대출을 갚는 데 쓰는 게 나을까, 전부 예금에 넣는 게 나을까, 아니면 반씩 나누는 게 나을까?",
+        "routes": [
+          "plan_validator"
+        ],
+        "review": "사용자가 제시한 세 가지 자금 운용 방법을 1년의 동일 기준으로 독립 비교한다. 현재 대출 조건을 활용하며 상품이 필요한 전략에만 검색을 배정한다. 실제 대출 상환·가입·저장은 하지 않는다. 다음 질문의 순번은 실제 표시 순서를 따른다. 사용자가 제시한 순서(전액 상환, 전액 예금, 반씩 배분)를 보존하여 후속 순번의 의미를 유지한다.",
+        "required_agents": [
+          "product",
+          "fund"
+        ],
+        "allowed_agents": [
+          "product",
+          "fund"
+        ],
+        "branch_count": [
+          3
+        ],
+        "handoff": "scenarios",
+        "requirements": [
+          {
+            "id": "available_cash",
+            "description": "여유자금 500만 원 보존",
+            "evidence": {
+              "scope": "plan",
+              "any_of": [
+                "(?<!\\d)5000000(?:원)?(?!\\d)",
+                "(?<!\\d)500만(?:원)?(?!\\d)",
+                "(?<!\\d)오백만(?:원)?(?!\\d)"
+              ]
+            }
+          },
+          {
+            "id": "three_strategies",
+            "description": "전액 상환/전액 예금/반씩 배분의 세 전략과 사용자가 제시한 표시 순서 보존"
+          },
+          {
+            "id": "comparable",
+            "description": "1년/12개월의 동일 기간 및 비교 기준의 독립 재무 계획",
+            "evidence": {
+              "scope": "plan",
+              "any_of": [
+                "(?<!\\d)1년(?!\\d)",
+                "(?<!\\d)12개월(?!\\d)",
+                "\"horizon_months\":12\\b"
+              ]
+            }
+          },
+          {
+            "id": "search_scope",
+            "description": "상품이 필요한 전략에만 상품 검색"
+          }
+        ],
+        "no_save": true
+      },
+      {
+        "question": "세 번째 방법이 괜찮은 것 같아. 그 방법으로 가입할 만한 상품 세 개만 추천해 줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "review": "앞선 표시 순서의 세 번째 실제 전략만 복원한다. 조건을 유지하고 Product 검색 상한 3개를 지킨다. 다른 전략은 재실행하지 않는다.",
+        "required_agents": [
           "product"
         ],
         "allowed_agents": [
-          "fund",
           "product"
         ],
         "branch_count": [
-          0,
           1
         ],
-        "review": "저축 여력과 적합 적금 후보를 함께 확인한다. Fund 선행 여부는 고정하지 않으며 적합한 납입 조건과 상품 탐색이 연결되어야 한다.",
+        "followup": "third_scenario",
         "requirements": [
           {
-            "id": "affordability",
-            "description": "현재 재무 상황으로 월 저축 가능액/부담을 분석"
+            "id": "selected_branch",
+            "description": "표시된 세 번째 전략 ID·가정·조건을 정확히 복원"
           },
           {
-            "id": "suitable_products",
-            "description": "부담 없는 납입액에 맞는 적금 검색"
+            "id": "candidate_count",
+            "description": "상품 후보 3개 이내로 요청 범위 제한"
           },
           {
-            "id": "limit",
-            "description": "후보는 최대 3개, 상품별 시나리오 분기 금지"
-          },
-          {
-            "id": "dependency_fit",
-            "description": "저축 여력 분석과 상품 검색의 실제 결과 활용 관계가 적절"
+            "id": "no_other_branch",
+            "description": "선택하지 않은 전략을 재실행하지 않음"
           }
         ],
         "no_save": true
