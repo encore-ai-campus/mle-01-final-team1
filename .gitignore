@@ -27,3 +27,6 @@ Thumbs.db
 
 # 사용자 데이터와 로그
 **/*.log
+
+# Ignore local SQLite databases
+*.db
