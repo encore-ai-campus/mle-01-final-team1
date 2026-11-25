@@ -2,6 +2,7 @@
 # 상위 State 계약과 실행 책임의 경계를 유지한다.
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -45,7 +46,17 @@ def validate_profile_request(data: dict[str, Any]) -> None:
         if data.get("operation") != "inspect" or data["is_temporary"] is not True:
             raise SupervisorContractError("fields are read-only inspect paths")
         validate_read_fields(data["fields"])
-    if set(data) - {"operation", "instruction", "is_temporary", "fields"}:
+    if data.get("operation", "prepare") == "prepare":
+        if "required_fields" in data:
+            validate_read_fields(data["required_fields"])
+        if "change_requested" in data and type(data["change_requested"]) is not bool:
+            raise SupervisorContractError("Profile change_requested must be a boolean")
+        if data.get("change_requested") is True and data["is_temporary"]:
+            raise SupervisorContractError("Temporary Profile prepare cannot request persisted changes")
+        allowed = {"operation", "instruction", "is_temporary", "required_fields", "change_requested"}
+    else:
+        allowed = {"operation", "instruction", "is_temporary", "fields"}
+    if set(data) - allowed:
         raise SupervisorContractError("Profile 입력에 정의되지 않은 필드가 있습니다.")
 
 
@@ -82,7 +93,71 @@ def normalize_change_proposals(changes: Any) -> list[dict[str, Any]]:
     return result
 
 
-def normalize_profile_result(data: Any) -> dict[str, Any]:
+# Profile income_extraction.py의 매핑 계약. 미지원 소득은 새 DB 필드/환산값이 아니다.
+INCOME_TARGETS = {
+    ("monthly", "net"): "financial_profile.monthly_net_income_krw",
+    ("annual", "gross"): "financial_profile.annual_gross_income_krw",
+}
+
+
+def _income_record(record: Any, keys: set[str], label: str) -> None:
+    if not isinstance(record, dict) or set(record) != keys:
+        raise SupervisorContractError(f"ProfileResult.{label} has invalid fields")
+    if type(record["amount_krw"]) is not int or record["amount_krw"] < 0:
+        raise SupervisorContractError(f"ProfileResult.{label}.amount_krw must be a nonnegative integer")
+    if not isinstance(record["raw_text"], str) or not record["raw_text"].strip():
+        raise SupervisorContractError(f"ProfileResult.{label}.raw_text must be a nonempty string")
+
+
+def _normalize_income_metadata(data: dict[str, Any], result: dict[str, Any], *, prepare: bool) -> None:
+    """신규 소득 추출/모호함 메타데이터만 검증하여 관찰에 보존한다. 적재는 하지 않는다."""
+    facts = data.get("extracted_info", [])
+    ambiguities = data.get("ambiguities", [])
+    if not isinstance(facts, list) or not isinstance(ambiguities, list):
+        raise SupervisorContractError("ProfileResult.extracted_info/ambiguities must be lists")
+    mapped: dict[str, int] = {}
+    expected = []
+    for fact in facts:
+        _income_record(fact, {"type", "period", "amount_krw", "tax_basis", "target_field", "raw_text"}, "extracted_info")
+        period, basis = fact["period"], fact["tax_basis"]
+        if fact["type"] != "income" or period not in ("monthly", "annual") or basis not in ("net", "gross", "unknown"):
+            raise SupervisorContractError("ProfileResult.extracted_info has invalid income type/period/tax_basis")
+        path = INCOME_TARGETS.get((period, basis))
+        if fact["target_field"] != path:
+            raise SupervisorContractError("ProfileResult.extracted_info.target_field conflicts with income period/tax_basis")
+        if path is None:
+            expected.append(("tax_basis_unknown" if basis == "unknown" else "unsupported_income_field", fact["raw_text"], fact["amount_krw"]))
+        else:
+            if path in mapped and mapped[path] != fact["amount_krw"]:
+                raise SupervisorContractError("ProfileResult.extracted_info has conflicting mapped income values")
+            mapped[path] = fact["amount_krw"]
+    actual = []
+    for item in ambiguities:
+        _income_record(item, {"type", "raw_text", "amount_krw"}, "ambiguities")
+        if item["type"] not in ("tax_basis_unknown", "unsupported_income_field"):
+            raise SupervisorContractError("ProfileResult.ambiguities has unknown type")
+        actual.append((item["type"], item["raw_text"], item["amount_krw"]))
+    if "extracted_info" in data and "ambiguities" in data and Counter(expected) != Counter(actual):
+        raise SupervisorContractError("ProfileResult.ambiguities does not match unmapped income facts")
+    # 새 계약을 쓰는 prepare의 소득 delta/변경안은 명확하게 매핑된 원값과 일치해야 한다.
+    # 메타데이터가 없는 레거시 반환 및 별도의 DB read는 기존 계약으로 검증한다.
+    if ("extracted_info" in data or "ambiguities" in data) and (prepare or facts or ambiguities):
+        for path in INCOME_TARGETS.values():
+            domain, field = path.split(".")
+            delta = result["profile"].get(domain, {})
+            if field in delta and delta[field] is not None and mapped.get(path) != delta[field]:
+                raise SupervisorContractError("Profile income delta does not match a mapped extracted fact")
+            for change in result.get("changes", []):
+                if change["domain"] == "financial" and change["field"] == field and (path not in mapped or mapped[path] != change["value"]):
+                    raise SupervisorContractError("Profile income change does not match a mapped extracted fact")
+    for key in ("extracted_info", "ambiguities"):
+        if key in data:
+            result[key] = deepcopy(data[key])
+
+
+def normalize_profile_result(data: Any, *, current_profile: dict[str, Any] | None = None,
+                             required_fields: list[str] | None = None) -> dict[str, Any]:
+    """prepare의 신규 필드 검증은 서버 snapshot, profile은 별도 추출 delta이다."""
     if not isinstance(data, dict) or not isinstance(data.get("profile"), dict):
         raise SupervisorContractError("ProfileResult.profile은 dict이어야 합니다.")
     missing = data.get("missing_info")
@@ -106,15 +181,27 @@ def normalize_profile_result(data: Any) -> dict[str, Any]:
             if path in statuses and statuses[path] != status:
                 raise SupervisorContractError("Conflicting Profile field_status aliases")
             statuses[path] = status
+    requested = set(validate_read_fields(required_fields)) if required_fields is not None else set()
+    if requested and (current_profile is None or set(statuses) != requested):
+        raise SupervisorContractError("Profile prepare must report field_status for exactly the requested required_fields")
+    # 최신 Profile은 required_fields 및 기존 누락 검사에서 실제 current_profile만 검사한다.
+    # 추출 delta를 이 상태와 비교하면 기존 null + 새 명시값 같은 정상 반환이 반려된다.
+    snapshot_status = current_profile is not None and (bool(requested) or "extracted_info" in data or "ambiguities" in data)
     for path in missing:
         if statuses.get(path) == "available":
             raise SupervisorContractError("Profile cannot mark a missing field available")
-        statuses.setdefault(path, "missing")
+        domain, field = path.split(".")
+        default = "not_loaded" if snapshot_status and field not in current_profile.get(domain, {}) else "missing"
+        statuses.setdefault(path, default)
     for path, status in statuses.items():
         domain, field = path.split(".")
-        value = result["profile"].get(domain, {}).get(field)
+        checked = current_profile if snapshot_status else result["profile"]
+        value = checked.get(domain, {}).get(field)
         if status == "available" and value is None:
-            raise SupervisorContractError("Profile available field must contain a non-null value")
+            raise SupervisorContractError("Profile available field must contain a non-null value in its checked snapshot/delta")
+        if snapshot_status and status == "missing" and field not in checked.get(domain, {}):
+            # Profile의 레거시 누락 검사에 미로딩 값이 포함되더라도 미등록으로 단정하지 않는다.
+            statuses[path] = status = "not_loaded"
         if status != "available" and value is not None:
             raise SupervisorContractError("Unresolved Profile field must not carry a confirmed value")
         if status in {"ambiguous", "conflict", "invalid"} and any(
@@ -144,6 +231,7 @@ def normalize_profile_result(data: Any) -> dict[str, Any]:
         if not isinstance(data["missing_inputs"], list) or not all(isinstance(item, str) for item in data["missing_inputs"]):
             raise SupervisorContractError("Invalid Profile missing_inputs")
         result["missing_inputs"] = list(dict.fromkeys(data["missing_inputs"]))
+    _normalize_income_metadata(data, result, prepare=current_profile is not None)
     return result
 
 
@@ -233,12 +321,14 @@ class SupervisorPorts:
         from agent.profile.profile_agent import run_profile_agent
 
         def profile_adapter(payload: dict[str, Any]) -> dict[str, Any]:
-            # Only the actual MVP request fields cross the adapter.
-            return run_profile_agent({
-                "instruction": payload["instruction"],
-                "is_temporary": payload["is_temporary"],
-                "current_profile": deepcopy(payload.get("current_profile", {})),
-            })
+            # 실제 ProfileRequest 계약만 전달한다. 새 옵션을 누락하지 않는다.
+            request = {"instruction": payload["instruction"],
+                       "is_temporary": payload["is_temporary"],
+                       "current_profile": deepcopy(payload.get("current_profile", {})),
+                       "change_requested": payload.get("change_requested", False)}
+            if "required_fields" in payload:
+                request["required_fields"] = deepcopy(payload["required_fields"])
+            return run_profile_agent(request)
 
         return cls(profile_agent=profile_adapter, retrieve_memory=retrieve_memory,
                    load_memory_context=load_memory_context, get_profile_fields=get_profile_fields,

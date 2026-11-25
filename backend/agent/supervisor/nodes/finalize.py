@@ -29,6 +29,8 @@ def _profile_pending_changes(observations: list[ToolObservation], source: dict[s
         req = obs.get("request", {})
         if req.get("operation", "prepare") != "prepare" or req.get("is_temporary") is not False:
             continue
+        if obs["result"].get("changes") and req.get("change_requested") is not True:
+            raise SupervisorContractError("Profile changes require explicit change_requested before approval")
         for ch in obs["result"].get("changes", []):
             field = ch.get("field")
             domain = ch.get("domain")
