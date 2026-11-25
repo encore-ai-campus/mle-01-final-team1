@@ -1,0 +1,298 @@
+[
+  {
+    "id": "T-01",
+    "profile": "debt",
+    "turns": [
+      {
+        "question": "월급은 270만 원이고 매달 생활비로 150만 원 정도 써. 지금 대출이 800만 원 있고 모아둔 돈은 500만 원 정도인데, 3년 안에 3천만 원을 모으려면 대출부터 갚는 게 좋을까? 아니면 청년 적금 같은 걸 먼저 가입하는 게 좋을까?",
+        "routes": [
+          "plan_validator",
+          "ask_user"
+        ],
+        "review": "3년/3천만원, 270/150/800/500만원과 각 의미 보존; 월급 세전/세후 확인 또는 조건부, 상환 vs 청년 적금(필요시 혼합), 정책 혜택을 확정 수입으로 처리 금지. 각 분기 Fund 결과 독립. Policy는 별도 정책 자격·지원금 조사가 필요한 경우에만 사용하고, 사용한 결과는 해당 Fund에 전달한다.",
+        "required_agents": [
+          "product",
+          "fund"
+        ],
+        "allowed_agents": [
+          "product",
+          "policy",
+          "fund"
+        ],
+        "branch_count": [
+          2,
+          3
+        ],
+        "dependencies": [
+          [
+            "product",
+            "fund"
+          ]
+        ]
+      }
+    ],
+    "profile_override": {
+      "financial_profile": {
+        "monthly_net_income_krw": 2700000,
+        "monthly_living_expenses_krw": 1500000,
+        "total_debt_krw": 8000000,
+        "total_assets_krw": 5000000,
+        "available_assets_krw": 5000000,
+        "liabilities": [
+          {
+            "liability_id": "eval_debt",
+            "liability_type": "credit_loan",
+            "balance_krw": 8000000,
+            "annual_rate_pct": 6.0,
+            "monthly_payment_krw": 200000,
+            "repayment_method": "installment",
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "C-04",
+    "profile": "complete",
+    "turns": [
+      {
+        "question": "나도 그 청년 적금 가입할 수 있어?",
+        "routes": [
+          "ask_user"
+        ],
+        "review": "이전 상품 참조가 주어지지 않음; 대상을 임의 확정하지 말고 짧은 확인 질문.",
+        "allowed_agents": []
+      }
+    ]
+  },
+  {
+    "id": "G-03",
+    "profile": "complete",
+    "turns": [
+      {
+        "question": "2년 안에 2천만 원을 모으고 싶어. 먼저 지금 가진 돈과 매달 저축할 수 있는 금액으로 기본 계획을 세워 줘. 그 계획에 맞는 적금을 찾아서 실제 상품 금리를 반영하면 2년 뒤 목표를 얼마나 달성할 수 있는지도 다시 계산해 줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "required_agents": [
+          "fund",
+          "product"
+        ],
+        "allowed_agents": [
+          "fund",
+          "product"
+        ],
+        "branch_count": [
+          0,
+          1
+        ],
+        "task_chains": [
+          [
+            "fund",
+            "product",
+            "fund"
+          ]
+        ],
+        "review": "기본 재무설계 Fund, 산출 조건 기반 Product 조회, 확인된 상품 조건 반영 Fund 재계산의 서로 다른 작업 ID 연결. 목표·기간·금액 보존. 미확인 금리/가입 자격 확정 금지, 상품 후보를 별도 전략으로 분기하지 않음."
+      }
+    ]
+  },
+  {
+    "id": "T-03",
+    "profile": "contract",
+    "turns": [
+      {
+        "question": "지금 월 50만 원씩 넣는 3년짜리 적금이 있는데 1년 정도 지났어. 요즘 금리가 더 높은 상품이나 정부 지원 적금이 있으면 갈아타고 싶은데, 중간에 해지해서 손해 보는 것까지 고려하면 어떻게 하는 게 좋을까?",
+        "routes": [
+          "plan_validator",
+          "ask_user"
+        ],
+        "review": "월 50만원/3년/1년 경과, 실제 계약 참조 및 만기·중도해지 조건 확인, 유지 vs 갈아타기, 정부 지원 상품 자격 포함. Policy는 별도 정책 자격·지원금 조사가 필요한 경우에만 사용하고, 사용한 결과는 해당 Fund에 전달한다.",
+        "required_agents": [
+          "product",
+          "fund"
+        ],
+        "allowed_agents": [
+          "product",
+          "policy",
+          "fund"
+        ],
+        "branch_count": [
+          2,
+          3
+        ],
+        "dependencies": [
+          [
+            "product",
+            "fund"
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "id": "B-06",
+    "profile": "complete",
+    "turns": [
+      {
+        "question": "독립 준비 중인데 초기 비용으로 쓸 수 있는 대출과 청년 지원 정책을 알아보고, 이후 매달 얼마나 저축할 수 있을지도 계산해 줘.",
+        "routes": [
+          "plan_validator",
+          "ask_user"
+        ],
+        "review": "독립 초기 비용, 대출 및 정책 결과를 월 저축 계산에 전달; 비용 미확정 시 필요한 조건 질문.",
+        "required_agents": [
+          "product",
+          "policy",
+          "fund"
+        ],
+        "allowed_agents": [
+          "product",
+          "policy",
+          "fund"
+        ],
+        "branch_count": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "dependencies": [
+          [
+            "product",
+            "fund"
+          ],
+          [
+            "policy",
+            "fund"
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "id": "E-01",
+    "profile": "debt",
+    "turns": [
+      {
+        "question": "여유자금 500만 원이 있는데 대출 상환, 예금 가입, 절반씩 상환하고 예금에 넣는 방법 세 가지를 비교해 줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "review": "500만원의 상환 우선/예금 우선/절반씩 병행 세 가지 전략을 독립 비교. 상품 검색이 필요한 분기만 배정하고 후보 상한을 지킨다. 후속 순번은 실제 표시 순서.",
+        "required_agents": [
+          "product",
+          "fund"
+        ],
+        "allowed_agents": [
+          "product",
+          "fund"
+        ],
+        "branch_count": [
+          3
+        ],
+        "dependencies": [
+          [
+            "product",
+            "fund"
+          ]
+        ],
+        "handoff": "scenarios"
+      },
+      {
+        "question": "세 번째 방법이 괜찮은 것 같아. 그 방법으로 가입할 만한 상품 3개만 찾아줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "review": "세 번째 실제 분기만 선택, 이전 조건 그대로, Product 후보 3개. 다른 분기 재실행 금지.",
+        "required_agents": [
+          "product"
+        ],
+        "allowed_agents": [
+          "product"
+        ],
+        "branch_count": [
+          1
+        ],
+        "followup": "third_scenario"
+      }
+    ]
+  },
+  {
+    "id": "F-02",
+    "profile": "empty",
+    "turns": [
+      {
+        "question": "매달 50만 원씩 2년 동안 모으면 얼마야?",
+        "routes": [
+          "plan_validator"
+        ],
+        "review": "50만원×24개월 원금, 금리 없으면 이자 미확정; 검색 불필요.",
+        "required_agents": [
+          "fund"
+        ],
+        "allowed_agents": [
+          "fund"
+        ],
+        "branch_count": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "id": "G-01",
+    "profile": "complete",
+    "turns": [
+      {
+        "question": "상품이나 정책 추천 없이, 내 현재 수입과 지출을 기준으로 앞으로 3년 동안의 저축 계획만 세워 줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "required_agents": [
+          "fund"
+        ],
+        "allowed_agents": [
+          "fund"
+        ],
+        "branch_count": [
+          0,
+          1
+        ],
+        "review": "Fund만으로 3년 현금흐름과 저축 계획을 작성하도록 배정. 실제 프로필 활용, 상품과 정책 검색은 명시적으로 제외."
+      }
+    ]
+  },
+  {
+    "id": "G-02",
+    "profile": "complete",
+    "turns": [
+      {
+        "question": "먼저 내가 매달 얼마까지 무리 없이 저축할 수 있는지 계산하고, 그 결과에 맞는 적금 상품을 최대 3개 찾아줘.",
+        "routes": [
+          "plan_validator"
+        ],
+        "required_agents": [
+          "fund",
+          "product"
+        ],
+        "allowed_agents": [
+          "fund",
+          "product"
+        ],
+        "branch_count": [
+          0,
+          1
+        ],
+        "task_chains": [
+          [
+            "fund",
+            "product"
+          ]
+        ],
+        "review": "Fund에서 가용 월 저축액을 먼저 산출하고 Product는 그 산출값에 맞춰 후보 검색. 불필요한 정책 조회나 상품별 분기 금지. 뒤의 추가 재계산은 요청 범위에 필요할 때만."
+      }
+    ]
+  }
+]
