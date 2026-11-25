@@ -18,7 +18,24 @@ class ProfileRequest(TypedDict):
     is_temporary: bool
     current_profile: NotRequired[dict[str, Any]]  # injected by server, not LLM
     operation: NotRequired[Literal["inspect", "prepare"]]
-    fields: NotRequired[list[str]]  # explicit read paths; Profile does not infer consultation intent
+    fields: NotRequired[list[str]]  # inspect: authenticated read paths
+    required_fields: NotRequired[list[str]]  # prepare: validate the injected snapshot, not a DB read
+    change_requested: NotRequired[bool]  # explicit user request; never an approval
+
+
+class ExtractedIncome(TypedDict):
+    type: Literal["income"]
+    period: Literal["monthly", "annual"]
+    amount_krw: int
+    tax_basis: Literal["net", "gross", "unknown"]
+    target_field: str | None  # canonical supported profile path, otherwise null
+    raw_text: str
+
+
+class IncomeAmbiguity(TypedDict):
+    type: Literal["tax_basis_unknown", "unsupported_income_field"]
+    raw_text: str
+    amount_krw: int
 
 
 class ProfileResult(TypedDict):
@@ -29,6 +46,8 @@ class ProfileResult(TypedDict):
     field_status: NotRequired[dict[str, str]]  # per-field validity/read status (tools/ports.py)
     branch_specs: NotRequired[list[dict[str, Any]]]
     missing_inputs: NotRequired[list[str]]
+    extracted_info: NotRequired[list[ExtractedIncome]]
+    ambiguities: NotRequired[list[IncomeAmbiguity]]
 
 
 class MemoryRequest(TypedDict):

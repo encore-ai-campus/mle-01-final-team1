@@ -33,6 +33,8 @@ class ProfilePrepareSchema(BaseModel):
     operation: Literal["prepare"] = "prepare"
     instruction: str = Field(min_length=1)
     is_temporary: bool
+    required_fields: list[ReadField] | None = Field(default=None, min_length=1, description="주입된 기존 프로필의 필드 검증(추가 DB 조회 아님)")
+    change_requested: bool = Field(default=False, description="사용자의 명시적 실제 프로필 변경 요청만 true; 임시 상담/가정은 false")
 
 
 class MemorySearchSchema(BaseModel):

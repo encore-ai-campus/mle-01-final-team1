@@ -1218,3 +1218,215 @@ class StateBoundaryTests(unittest.TestCase):
         self.assertEqual(calls, [["financial_profile.annual_gross_income_krw"]])
         self.assertEqual(out.update["financial_profile"], {**source["financial_profile"], "annual_gross_income_krw": 34000000})
         self.assertEqual(source, before)
+
+
+class ProfileIncomeContractTests(unittest.TestCase):
+    """고도화 Profile의 실제 반환 계약과 Supervisor의 읽기/변경 경계를 검증한다."""
+    net = "financial_profile.monthly_net_income_krw"
+    gross = "financial_profile.annual_gross_income_krw"
+    living = "financial_profile.monthly_living_expenses_krw"
+
+    @staticmethod
+    def _fact(period="monthly", basis="net", amount=3000000, target="financial_profile.monthly_net_income_krw", raw="세후 월급 300만 원"):
+        return {"type": "income", "period": period, "amount_krw": amount,
+                "tax_basis": basis, "target_field": target, "raw_text": raw}
+
+    @staticmethod
+    def _ambiguity(fact):
+        return {"type": "tax_basis_unknown" if fact["tax_basis"] == "unknown" else "unsupported_income_field",
+                "raw_text": fact["raw_text"], "amount_krw": fact["amount_krw"]}
+
+    @staticmethod
+    def _result(facts, ambiguities=None, **kw):
+        return {"profile": {}, "missing_info": [], "changes": [], "extracted_info": facts,
+                "ambiguities": [] if ambiguities is None else ambiguities, **kw}
+
+    @staticmethod
+    def _prepare(text, *, temporary=True, change=False, required=None):
+        args = {"operation": "prepare", "instruction": text, "is_temporary": temporary, "change_requested": change}
+        if required is not None:
+            args["required_fields"] = required
+        return {"kind": "call_tool", "reason": "소득 입력 추출 및 필요한 기존 정보 검증",
+                "tool_name": "profile_agent", "tool_input": args}
+
+    @staticmethod
+    def _ask(question="입력한 소득의 기준을 확인해 주세요.", fields=None):
+        return {"kind": "ask_user", "reason": "필수 정보/승인 확인",
+                "pending_input": [{"question": question, "fields": fields or ["income_basis"], "target": "supervisor"}]}
+
+    def _real_ports(self):
+        try:
+            from agent.profile.profile_agent import run_profile_agent
+        except ModuleNotFoundError as exc:
+            if exc.name in {"agent.profile", "agent.profile.profile_agent"}:
+                self.skipTest("고도화된 팀 Profile 모듈이 설치된 프로젝트에서 실행하세요.")
+            raise
+        return SupervisorPorts.with_profile_mvp()
+
+    def test_legacy_and_new_income_metadata_preserved(self):
+        from ..tools.ports import normalize_profile_result
+        legacy = {"profile": {"financial_profile": {"monthly_net_income_krw": 3000000}}, "missing_info": []}
+        self.assertEqual(normalize_profile_result(legacy), legacy)
+        net = self._fact()
+        annual = self._fact("annual", "gross", 45000000, self.gross, "세전 연봉 4,500만 원")
+        monthly_gross = self._fact("monthly", "gross", 3500000, None, "세전 월급 350만 원")
+        ambiguous = self._fact("monthly", "unknown", 3500000, None, "월급 350만 원")
+        raw = self._result([net, annual, monthly_gross, ambiguous],
+                           [self._ambiguity(monthly_gross), self._ambiguity(ambiguous)],
+                           profile={"financial_profile": {"monthly_net_income_krw": 3000000, "annual_gross_income_krw": 45000000}})
+        before = deepcopy(raw)
+        result = normalize_profile_result(raw)
+        self.assertEqual(result, raw)
+        result["extracted_info"][0]["amount_krw"] = 0
+        self.assertEqual(raw, before)
+        self.assertEqual(normalize_profile_result(self._result([self._fact(amount=0)]))["extracted_info"][0]["amount_krw"], 0)
+
+    def test_income_metadata_rejects_bad_shape_and_mismatch(self):
+        from ..tools.ports import normalize_profile_result
+        fact = self._fact()
+        for change in ({"amount_krw": True}, {"amount_krw": -1}, {"amount_krw": 3.0}, {"period": "week"},
+                       {"tax_basis": "unknown"}, {"target_field": self.gross}, {"raw_text": ""},
+                       {"write_state": {}}):
+            with self.subTest(change=change), self.assertRaises(SupervisorContractError):
+                normalize_profile_result(self._result([{**fact, **change}]))
+        unsupported = self._fact("monthly", "gross", 3500000, None, "세전 월급 350만 원")
+        for bad in ([{**self._ambiguity(unsupported), "amount_krw": 42}],
+                    [{**self._ambiguity(unsupported), "type": "tax_basis_unknown"}], [], "invalid"):
+            with self.subTest(bad=bad), self.assertRaises(SupervisorContractError):
+                normalize_profile_result(self._result([unsupported], bad))
+        with self.assertRaises(SupervisorContractError):
+            normalize_profile_result(self._result({"fake": fact}))
+
+    def test_unsupported_or_conflicting_income_cannot_be_mapped(self):
+        from ..tools.ports import normalize_profile_result
+        unsupported = self._fact("monthly", "gross", 3500000, None, "세전 월급 350만 원")
+        raw = self._result([unsupported], [self._ambiguity(unsupported)])
+        for patch_value in ({"profile": {"financial_profile": {"annual_gross_income_krw": 42000000}}},
+                            {"changes": [{"change_id": "bad", "domain": "financial", "field": "annual_gross_income_krw", "value": 42000000}]}):
+            with self.subTest(patch=patch_value), self.assertRaises(SupervisorContractError):
+                normalize_profile_result({**raw, **patch_value}, current_profile={})
+        with self.assertRaisesRegex(SupervisorContractError, "conflicting mapped income"):
+            normalize_profile_result(self._result([self._fact(), self._fact(amount=3500000)]))
+
+    def test_required_fields_status_checks_snapshot_not_delta(self):
+        from ..tools.ports import normalize_profile_result
+        base = {"financial_profile": {"monthly_net_income_krw": None, "monthly_living_expenses_krw": 1500000}}
+        raw = self._result([self._fact()], profile={"financial_profile": {"monthly_net_income_krw": 3000000}},
+                           field_status={self.net: "unknown", self.living: "available", self.gross: "not_loaded"},
+                           missing_info=["monthly_net_income_krw", self.gross])
+        result = normalize_profile_result(raw, current_profile=base, required_fields=[self.net, self.living, self.gross])
+        self.assertEqual(result["field_status"], {self.net: "missing", self.living: "available", self.gross: "not_loaded"})
+        self.assertEqual(result["missing_info"], [self.net])
+        self.assertEqual(result["profile"], raw["profile"])
+        self.assertNotIn("verified_read", result)
+        for statuses in ({self.net: "available", self.living: "available", self.gross: "not_loaded"},
+                         {self.net: "missing", self.gross: "not_loaded"}):
+            with self.subTest(statuses=statuses), self.assertRaises(SupervisorContractError):
+                normalize_profile_result({**raw, "field_status": statuses}, current_profile=base, required_fields=[self.net, self.living, self.gross])
+
+    def test_new_prepare_request_schema_and_scope(self):
+        from ..llm.adapter import DecisionSchema
+        from ..tools.ports import validate_profile_request
+        decision = self._prepare("세후 월급 300만 원으로 저장해 줘", temporary=False, change=True, required=[self.net])
+        parsed = DecisionSchema.model_validate(decision).model_dump(exclude_none=True)
+        self.assertEqual(parsed["tool_input"], decision["tool_input"])
+        validate_profile_request(parsed["tool_input"])
+        legacy = {"instruction": "소득 추출", "is_temporary": True}
+        validate_profile_request(legacy)
+        for bad in ({**legacy, "change_requested": True}, {**legacy, "change_requested": 1},
+                    {**legacy, "required_fields": ["financial_profile.monthly_gross_income_krw"]},
+                    {**legacy, "current_profile": {}}, {**legacy, "required_fields": []},
+                    {**legacy, "operation": "inspect", "fields": [self.net], "required_fields": [self.net]},
+                    {**legacy, "operation": "inspect", "fields": [self.net], "change_requested": False}):
+            with self.subTest(bad=bad), self.assertRaises(SupervisorContractError):
+                validate_profile_request(bad)
+
+    def test_real_profile_prepare_flags_and_extraction(self):
+        from ..tools.ports import normalize_profile_result
+        ports = self._real_ports()
+        base = {"financial_profile": {"monthly_net_income_krw": 2800000, "monthly_living_expenses_krw": 0}}
+        for question, basis, target, amount in (("세후 월급 300만 원", "net", self.net, 3000000),
+                                                ("세전 연봉 4,500만 원", "gross", self.gross, 45000000),
+                                                ("세전 월급 350만 원", "gross", None, 3500000),
+                                                ("월급 350만 원", "unknown", None, 3500000)):
+            with self.subTest(question=question):
+                raw = ports.profile_agent({"instruction": question, "is_temporary": True, "current_profile": base,
+                                           "required_fields": [self.living], "change_requested": False})
+                result = normalize_profile_result(raw, current_profile=base, required_fields=[self.living])
+                self.assertEqual(result["field_status"], {self.living: "available"})
+                self.assertEqual(result["extracted_info"][0]["tax_basis"], basis)
+                self.assertEqual(result["extracted_info"][0]["target_field"], target)
+                self.assertEqual(result["extracted_info"][0]["amount_krw"], amount)
+                self.assertFalse(result["changes"])
+                self.assertEqual(bool(result["ambiguities"]), target is None)
+        # Adapter는 기존 텍스트 기반 저장 추론을 끈다.
+        raw = ports.profile_agent({"instruction": "세후 월급 300만 원 저장해 줘", "is_temporary": False, "current_profile": base})
+        self.assertFalse(raw["changes"])
+        self.assertEqual(base["financial_profile"]["monthly_net_income_krw"], 2800000)
+
+    def test_real_profile_metadata_reaches_reason_without_hydration(self):
+        ports = self._real_ports()
+        source = SuppliedValuesRegressionTests._source()
+        before = deepcopy(source)
+        contexts = []
+        def decide(ctx):
+            contexts.append(deepcopy(ctx))
+            if len(contexts) == 1:
+                return self._prepare("월급 350만 원이야. 매달 얼마 저축할 수 있어?", required=[self.net, self.living])
+            return self._ask()
+        out = Supervisor(decide=decide, ports=ports).run(source, use_graph=False)
+        obs = contexts[1]["observations"][-1]["result"]
+        self.assertEqual(obs["extracted_info"][0]["tax_basis"], "unknown")
+        self.assertEqual(obs["ambiguities"][0]["type"], "tax_basis_unknown")
+        self.assertEqual(obs["field_status"][self.net], "available")
+        self.assertEqual(out.next_node, "ask_user")
+        for key in ("extracted_info", "ambiguities", "financial_profile", "financial_profile_changes"):
+            self.assertNotIn(key, out.update)
+        self.assertEqual(source, before)
+
+    def test_real_profile_explicit_change_only_produces_approval(self):
+        ports = self._real_ports()
+        source = SuppliedValuesRegressionTests._source()
+        before = deepcopy(source)
+        decisions = iter([self._prepare("세후 월급 300만 원으로 저장해 줘", temporary=False, change=True),
+                          self._ask("세후 월급 300만 원으로 변경할까요?", ["confirm_income_change"])])
+        out = Supervisor(decide=lambda _: next(decisions), ports=ports).run(source, use_graph=False)
+        self.assertEqual(out.next_node, "ask_user")
+        changes = out.update["financial_profile_changes"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual((changes[0]["field"], changes[0]["value"], changes[0]["status"]),
+                         ("monthly_net_income_krw", 3000000, "needs_confirmation"))
+        self.assertEqual(out.update["intent"]["profile_update_status"], "waiting")
+        self.assertNotIn("financial_profile", out.update)
+        self.assertEqual(source, before)
+        # 미지원 소득을 명시적으로 저장하라고 해도 임의 연환산 후보는 나오지 않는다.
+        raw = ports.profile_agent({"instruction": "세전 월급 350만 원 저장해 줘", "is_temporary": False, "change_requested": True})
+        self.assertFalse(raw["changes"])
+        self.assertEqual(raw["ambiguities"][0]["type"], "unsupported_income_field")
+
+    def test_non_temporary_without_change_flag_cannot_propose_changes(self):
+        source = SuppliedValuesRegressionTests._source()
+        decision = self._prepare("소득 추출", temporary=False, change=False)
+        trace = []
+        decisions = iter([decision, SuppliedValuesRegressionTests._plan()])
+        calls = []
+        def service(request):
+            calls.append(deepcopy(request))
+            return {"profile": {}, "missing_info": [], "changes": [{"change_id": "bad", "domain": "financial",
+                                                                      "field": "monthly_net_income_krw", "value": 3000000}]}
+        out = Supervisor(decide=lambda _: next(decisions), ports=SupervisorPorts(profile_agent=service), trace_sink=trace.append).run(source, use_graph=False)
+        self.assertIs(calls[0]["change_requested"], False)
+        self.assertEqual(next(x for x in trace if x["node"] == "tools")["output"]["observation"]["result"]["status"], "failed")
+        self.assertNotIn("financial_profile_changes", out.update)
+        self.assertNotIn("financial_profile", out.update)
+
+    def test_read_port_cannot_inject_extracted_facts(self):
+        source = SuppliedValuesRegressionTests._source()
+        decision = {"kind": "call_tool", "reason": "기존 연소득 조회", "tool_name": "profile_agent", "tool_input": {
+            "operation": "inspect", "instruction": "연소득 조회", "is_temporary": True, "fields": [self.gross]}}
+        decisions = iter([decision, SuppliedValuesRegressionTests._plan()])
+        trace = []
+        raw = self._result([self._fact()], profile={"financial_profile": {"annual_gross_income_krw": 42000000}})
+        out = Supervisor(decide=lambda _: next(decisions), ports=SupervisorPorts(get_profile_fields=lambda _: raw), trace_sink=trace.append).run(source, use_graph=False)
+        self.assertEqual(next(x for x in trace if x["node"] == "tools")["output"]["observation"]["result"]["status"], "failed")
+        self.assertNotIn("financial_profile", out.update)

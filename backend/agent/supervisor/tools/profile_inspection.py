@@ -68,8 +68,9 @@ def inspect_fields(supervisor: "Supervisor", state: dict[str, Any], fields: list
                 statuses.update(dict.fromkeys(needed, raw["status"]))
             else:
                 wrapped = raw if "profile" in raw else {"profile": raw, "missing_info": []}
-                if wrapped.get("changes") or wrapped.get("branch_specs"):
-                    raise SupervisorContractError("Read-only Profile response cannot propose changes or branches")
+                if (wrapped.get("changes") or wrapped.get("branch_specs")
+                        or wrapped.get("extracted_info") or wrapped.get("ambiguities")):
+                    raise SupervisorContractError("Read-only Profile response cannot propose changes, branches or extracted input facts")
                 read = normalize_profile_result(wrapped)
                 fresh = read["profile"]
                 for domain in FIELDS:

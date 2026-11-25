@@ -34,7 +34,10 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
                 current = source_with_reads(state)
                 payload = deepcopy(args)
                 # Source only from the real snapshot; never from memory or scenario overrides.
-                payload["current_profile"] = {d: deepcopy(current[d]) for d in FIELDS if d in current}
+                snapshot = {d: deepcopy(current[d]) for d in FIELDS if d in current}
+                payload["current_profile"] = deepcopy(snapshot)
+                # 텍스트에서 저장 의도를 다시 추정하지 않도록 명시 플래그를 항상 주입한다.
+                payload["change_requested"] = args.get("change_requested", False)
                 raw = supervisor.ports.profile_agent(payload)
             except Exception:
                 result = {"status": "failed", "error_code": "profile_service_error"}
@@ -42,9 +45,10 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
                 if isinstance(raw, dict) and raw.get("status") in ("failed", "access_denied", "unavailable"):
                     result = {"status": "failed", "error_code": f"profile_{raw['status']}"}
                 else:
-                    result = normalize_profile_result(raw)
-                    if args["is_temporary"] and result.get("changes"):
-                        raise SupervisorContractError("Temporary Profile prepare cannot propose persisted changes")
+                    result = normalize_profile_result(raw, current_profile=snapshot,
+                                                      required_fields=args.get("required_fields"))
+                    if result.get("changes") and (args["is_temporary"] or args.get("change_requested") is not True):
+                        raise SupervisorContractError("Profile changes require an explicit non-temporary change_requested")
     elif name == "retrieve_memory":
         validate_memory_request(args)
         cached = next((obs["result"] for obs in reversed(state.get("observations", [])) if obs["name"] == name and obs.get("request") == args), None)

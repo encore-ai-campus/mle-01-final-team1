@@ -998,7 +998,7 @@ LLM은 사용자 의도, 전략, 필요한 작업과 도구를 결정한다. Pyt
 #### 도구 계약
 
 - Profile inspect: `operation=inspect`, `instruction`, `is_temporary=true`, 등록된 `fields[]` 필수. fields 없이 prepare로 우회할 수 없다. 읽기 응답에서 요청하지 않은 프로필 필드는 적재하지 않는다.
-- Profile prepare: `operation=prepare`, `instruction`, `is_temporary`만 LLM 입력에 노출한다. `current_profile`은 서버가 주입한다. 반환 변경 후보의 `change_id/domain/field/value` 및 선택 `remove_goal_ids`를 검사한다. applied 등 완료 상태를 허용하지 않는다. 임시 prepare의 실제 저장 후보는 반려한다. 실제 변경 후보는 기존 사용자 승인 대기 경로로만 전달한다.
+- Profile prepare(v25 당시): `operation=prepare`, `instruction`, `is_temporary`를 LLM 입력에 노출한다. v27의 선택적 `required_fields`, `change_requested`와 신규 반환 계약은 9.8을 참고한다. `current_profile`은 서버가 주입한다. 반환 변경 후보의 `change_id/domain/field/value` 및 선택 `remove_goal_ids`를 검사한다. applied 등 완료 상태를 허용하지 않는다. 임시 prepare의 실제 저장 후보는 반려한다. 실제 변경 후보는 기존 사용자 승인 대기 경로로만 전달한다.
 - Memory: 기존 `query`, `limit`, `memory_types` 계약 및 조회 결과 정규화를 유지한다. 인증 식별자는 서버가 바인딩한다.
 - Scenario: 등록된 `overrides`는 기존 프로필 가정 필드만 허용한다. `assumptions`의 허용 키는 `horizon_months`, `allocation_pct`, `holding_actions`, `goal_mode`, `notes`이다. `holding_actions`는 기존 `keep/terminate/subscribe`와 해당 조건 계약만 허용하며 실제 거래 명령은 아니다. 새로운 금융 가정은 `notes` 또는 해당 작업 `objective`로 전달한다. 새로운 구조화 필드가 필요하면 해당 계약과 검증기를 함께 확장한다.
 - 질문: `question/fields/target` 및 선택 `id/scenario_id/status=pending`만 허용하고 답변·해결 상태는 LLM 입력에서 제외한다.
@@ -1008,3 +1008,72 @@ LLM은 사용자 의도, 전략, 필요한 작업과 도구를 결정한다. Pyt
 #### 검증
 
 오프라인 계약 검사 67개(64개 통과, 3개 환경 의존 검사 미실행) 및 평가기 검사 19개(19개 통과). 9개 신규 검사: 도구/질문 스키마, Decision 범위, inspect 우회 금지, 변경 후보 계약, 임시 변경 후보 금지, 가상 분기 허용 필드, 내부 노드 쓰기 범위, 상위 패치 및 조회 경계, 요청한 필드만 적재. 실제 API는 호출하지 않았다. 구조화 스키마는 이전보다 상세해져 호출당 입력이 늘 수 있으며 실제 토큰 절감은 재실행 측정이 필요하다. 검증 기능을 위해 새 LLM 호출이나 새 Graph 노드를 추가하지 않는다.
+
+
+### 9.8 v27 고도화된 Profile 연결 계약
+
+기준: main `10c0cdc`의 `agent/profile/profile_agent.py`, `income_extraction.py`, `profile_change_policy.py`, `profile_validation.py`, `profile_db_service.py`. Profile 및 공용 State/DB 계약은 변경하지 않는다. Supervisor의 `contracts.py`, `llm/adapter.py`, `tools/ports.py`에 실제 Profile 요청/반환 구조를 반영한다.
+
+#### 입력: 조회와 준비의 구분
+
+| 항목 | inspect | prepare |
+|---|---|---|
+| `operation` | `inspect` | `prepare`(기존 기본값 유지) |
+| `instruction` | 조회 목적 | 실제 사용자 표현·가정·요청 범위 보존 |
+| `is_temporary` | 반드시 true | 일회성/가상은 true, 실제 변경 요청은 false |
+| `fields` | 등록된 필드 경로 목록 필수 | 금지 |
+| `required_fields` | 금지 | 선택: 주입된 기존 snapshot의 지정 필드 검증 |
+| `change_requested` | 금지 | 선택 bool, 기본 false; true는 명시 실제 변경 요청만 |
+| `current_profile` | LLM 입력 금지 | 서버가 실제 snapshot을 별도 주입 |
+
+`required_fields`는 Profile의 검증 함수가 사용하는 입력이며 DB 조회 요청이 아니다. 추가 DB 확인은 기존 `inspect(fields)` 경로를 사용한다. `change_requested`는 실제 변경 의도를 알리는 플래그이지 사용자 승인이 아니다. 임시 준비와 true를 함께 보내면 반려한다. 생략 시 false를 명시적으로 전달하므로 기존 텍스트 기반 저장 의도 추론에 의존하지 않는다. flag=false인 준비 결과에 `changes`가 포함되면 반려한다(기존 호출자는 실제 변경 요청 시 명시 flag를 전달해야 한다). 최종 변경 후보는 기존 `needs_confirmation` 경로를 유지한다.
+
+#### 반환: 구조화된 소득 관찰
+
+기존 `profile`, `missing_info`, `changes`, `field_status`, `baseline_ref`, `branch_specs`, `missing_inputs` 계약은 유지한다. 선택적인 `extracted_info` 및 `ambiguities`를 추가한다. 두 필드는 내부 `observations[].result`에만 보관하며 Reason의 기존 context 전달 경로를 사용한다. 새로운 MainState 키나 내부 노드는 추가하지 않는다.
+
+```json
+{
+  "profile": {},
+  "missing_info": [],
+  "changes": [],
+  "extracted_info": [
+    {
+      "type": "income",
+      "period": "monthly",
+      "amount_krw": 3500000,
+      "tax_basis": "gross",
+      "target_field": null,
+      "raw_text": "세전 월급 350만 원"
+    }
+  ],
+  "ambiguities": [
+    {
+      "type": "unsupported_income_field",
+      "raw_text": "세전 월급 350만 원",
+      "amount_krw": 3500000
+    }
+  ]
+}
+```
+
+| period / tax_basis | target_field / 처리 |
+|---|---|
+| monthly / net | `financial_profile.monthly_net_income_krw` |
+| annual / gross | `financial_profile.annual_gross_income_krw` |
+| monthly / gross, annual / net | null / `unsupported_income_field` |
+| monthly 또는 annual / unknown | null / `tax_basis_unknown` |
+
+금액은 원 단위 비음수 정수(0 포함, bool/float 금지), 기간·세전세후·매핑 필드·원문·모호함 유형을 검증한다. 두 신규 목록을 함께 반환하면 미매핑 사실과 모호함 기록이 서로 일치해야 한다. 충돌하는 매핑 금액이나 미지원 값의 임의 환산으로 생성된 delta/변경 후보는 반려한다. 기존 목록을 생략한 반환은 기존 계약으로 처리한다. 읽기 전용 DB inspect에서 추출 사실/모호함을 주입하는 것은 금지한다.
+
+고도화된 prepare의 `field_status`와 `missing_info`는 서버에서 주입한 **기존 snapshot**의 상태이다. `profile`은 새 추출 delta이며 별도로 판단한다. 예를 들어 등록 순소득이 null이어도 이번에 명시한 세후 월급 값이 delta로 있을 수 있다. 이 둘을 대조하여 정상 결과를 반려하거나 이미 명시한 소득을 재질문하지 않는다. prepare의 available은 DB 신규 조회/저장 완료가 아니다. `unknown`은 기존 missing으로 정규화하며 미로딩 값은 not_loaded로 구별한다. 요청한 `required_fields`에는 각각의 `field_status`가 필요하다. 기존 snapshot은 덮어쓰지 않는다.
+
+Supervisor는 모호함이 현재 목적에 필수적인 경우에만 질문한다. 지원하지 않는 소득을 원문·단위·세전/세후 조건 그대로 작업 objective 또는 assumptions.notes에 전달하여 조건부 분석할 수 있다. 실제 연간 세전소득이 확인되지 않은 상태에서 단순 연환산 값을 실제 프로필에 적재하지 않는다. 추출 metadata 자체를 `supplied_values`/`overrides`/MainState/DB에 통째로 적재하지 않는다. 명시된 스키마 호환 값만 기존 방식으로 상담에 사용한다. 명확한 입력이면 prepare 없이 직접 정규화할 수 있으며 새로운 Profile 호출을 강제하지 않는다.
+
+#### 검증 범위
+
+- 기존 계약 검사 67개에 Profile 계약 검사 10개 추가(77개 중 75개 통과, LangGraph 및 Memory 의존 검사 2개 미실행). 최신 main의 실제 Profile 추출·변경 후보·필드 검증 구현을 연결하여 검사하였다. 평가기 단위 검사 20개 모두 통과.
+- `python backend/agent/supervisor/supervisor_main.py --regression`: 비용 없는 반환·요청 경계 및 실제 Profile 함수 연동 검사.
+- `python backend/agent/supervisor/supervisor_test.py --case C-05 --with-profile-prepare`: 실제 LLM에서 선택적으로 Profile 준비 포트를 연결하는 평가(실제 API 비용 발생; 해당 질문에서 반드시 prepare를 호출한다는 뜻은 아님).
+
+실제 API, 인증 DB 조회/저장, 부모 LangGraph 및 Memory 운영 연동은 이번 검증 범위가 아니다. Profile의 자연어 추출 범위·상황 판단 정확도는 팀의 현재 구현에 의존한다. Supervisor의 구조 검증은 원문 의미의 완전한 사실 검증을 대신하지 않으며, 명시된 변경 요청과 실제 승인 여부는 별도 사용자 확인 경계로 관리한다.
