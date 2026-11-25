@@ -5,10 +5,13 @@ from copy import deepcopy
 from typing import Any, TYPE_CHECKING
 from ..state import SupervisorWorkingState, ToolObservation
 from ..contracts import (
-    SupervisorContractError, normalize_plan, validate_plan, validate_intent_scenarios,
+    SupervisorContractError, normalize_plan, validate_intent_scenarios,
 )
 from ..tools.profile_fields import validate_overlay, merge_goals, source_with_reads
 from ..tools.memory import merge_memory
+from ..tools.advice import selected_scenario
+from ..candidate_budget import apply_candidate_limits
+from ..clarification import has_answered_waiting_turn
 from ..tools.scenarios import prepare_scenarios, prepare_verified_scenarios
 if TYPE_CHECKING:
     from ..supervisor_main import Supervisor
@@ -80,7 +83,10 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
         previous_scenario = src.get("scenario_state")
         # 새 사실을 얻지 않는 정규화는 Plan에서 바로 실행한다.
         # 별도 Tool 경로와 동일한 baseline/holding 출처 검사로 우회 제출을 차단한다.
-        if "scenario_state" in decision:
+        selected = selected_scenario(decision, state)
+        if selected is not None:
+            scenario = selected
+        elif "scenario_state" in decision:
             scenario = prepare_verified_scenarios(decision["scenario_state"], state)["scenario_state"]
         elif scenario is not None:
             scenario = prepare_scenarios(scenario)["scenario_state"]
@@ -94,15 +100,16 @@ def run(supervisor: "Supervisor", state: SupervisorWorkingState) -> dict[str, An
                 base_goals = supplied.get("goals", (src.get("basic_profile") or {}).get("goals"))
                 merge_goals(base_goals, overrides["goals"], replace=branch.get("assumptions", {}).get("goal_mode") == "replace")
         input_changed = ((intent is not None and intent != src.get("intent"))
-                         or any(src.get(domain) != state["source"].get(domain) for domain in ("basic_profile", "financial_profile")))
+                         or any(src.get(domain) != state["source"].get(domain) for domain in ("basic_profile", "financial_profile"))
+                         or bool(src.get("execution_plan") and has_answered_waiting_turn(src)))
         plan = normalize_plan(
             decision.get("execution_plan"), src.get("execution_plan"), scenario_changed,
             input_changed=input_changed,
             review_rejected=has_current_review_rejection(src),
         )
-        validate_plan(plan, scenario)
+        plan = apply_candidate_limits(plan, scenario, src.get("execution_plan"))
         patch: dict[str, Any] = {"phase": "planning", "execution_plan": plan, "intent": intent}
-        if "scenario_state" in decision or scenario_result is not None or scenario_changed:
+        if "scenario_state" in decision or scenario_result is not None or scenario_changed or selected is not None:
             patch["scenario_state"] = scenario
         attach_memory(src, state.get("observations", []), patch)
         return {"candidate_patch": patch, "candidate_error": None}

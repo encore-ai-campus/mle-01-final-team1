@@ -512,3 +512,416 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(result["profile"]["financial_profile"]["monthly_net_income_krw"], 2500000)
         self.assertFalse(result.get("changes"))
         self.assertEqual(original["financial_profile"]["monthly_net_income_krw"], 3200000)
+
+
+class CandidateAndFollowupTests(unittest.TestCase):
+    @staticmethod
+    def _task(tid, agent="product", sid=None, deps=()):
+        return {"task_id": tid, "agent": agent, "scenario_id": sid,
+                "objective": f"{tid} 필요한 결과 조사", "depends_on": list(deps)}
+
+    @staticmethod
+    def _intent(operation="new", mode=None, ref=None):
+        result = {"purpose": "재무 전략 분석", "operation": operation,
+                  "supplied_values": {}, "profile_update_status": "not_needed"}
+        if mode:
+            result["analysis_mode"] = mode
+        if ref:
+            result["target_advice_ref"] = ref
+        return result
+
+    def _plan(self, tasks, scenarios=None, intent=None, **extra):
+        return {"kind": "submit_plan", "reason": "계획", "intent": intent or self._intent(),
+                "execution_plan": {"tasks": tasks}, **({"scenario_state": scenarios} if scenarios else {}), **extra}
+
+    def _execute(self, decision, source=None, ports=None):
+        calls = []
+        def decide(context):
+            calls.append(deepcopy(context))
+            return deepcopy(decision)
+        s = Supervisor(decide=decide, ports=ports, max_repairs=0)
+        outcome = s.run(source or {"messages": [{"type": "human", "content": "계획"}]}, use_graph=False)
+        self.assertEqual(len(calls), 1)
+        return outcome.update, calls[0]
+
+    def test_candidate_limits_zero_to_three_branches(self):
+        for n, cap in [(0, 3), (1, 3), (2, 3), (3, 2)]:
+            with self.subTest(n=n):
+                ids = [f"s{i}" for i in range(n)] if n else [None]
+                scenarios = {"scenarios": [{"id": sid, "label": sid} for sid in ids]} if n else None
+                tasks = [self._task(f"{a}_{i}", a, sid) for i, sid in enumerate(ids) for a in ("product", "policy", "fund")]
+                state, _ = self._execute(self._plan(tasks, scenarios))
+                for task in state["execution_plan"]["tasks"]:
+                    if task["agent"] == "fund":
+                        self.assertNotIn("candidate_limit", task)
+                    else:
+                        self.assertEqual(task["candidate_limit"], cap)
+                for agent in ("product", "policy"):
+                    self.assertLessEqual(sum(t["candidate_limit"] for t in state["execution_plan"]["tasks"] if t["agent"] == agent), 6)
+
+    def test_multiple_searches_share_branch_budget(self):
+        scenarios = {"scenarios": [{"id": f"s{i}", "label": f"s{i}"} for i in range(3)]}
+        tasks = [self._task("a1", sid="s0"), self._task("a2", sid="s0"), self._task("b", sid="s1"), self._task("c", sid="s2")]
+        state, _ = self._execute(self._plan(tasks, scenarios))
+        self.assertEqual({t["task_id"]: t["candidate_limit"] for t in state["execution_plan"]["tasks"]}, {"a1": 1, "a2": 1, "b": 2, "c": 2})
+        with self.assertRaisesRegex(SupervisorContractError, "후보 슬롯"):
+            self._execute(self._plan(tasks + [self._task("a3", sid="s0")], scenarios))
+
+    def test_shared_query_charged_to_each_consumer(self):
+        state, _ = self._execute(self._plan(ContractTests._branch_plan()["tasks"], ContractTests._scenario_inputs()))
+        self.assertEqual({t["task_id"]: t["candidate_limit"] for t in state["execution_plan"]["tasks"] if "candidate_limit" in t}, {"common": 1, "policy_c": 2, "product_c": 1})
+
+    def test_server_limit_not_llm_owned(self):
+        from ..candidate_budget import validate_candidate_limits
+        draft = self._task("p")
+        draft["candidate_limit"] = 999
+        state, _ = self._execute(self._plan([draft]))
+        plan = state["execution_plan"]
+        self.assertEqual(plan["tasks"][0]["candidate_limit"], 3)
+        plan["tasks"][0]["candidate_limit"] = 999
+        with self.assertRaisesRegex(SupervisorContractError, "변조"):
+            validate_candidate_limits(plan, None)
+
+    def test_dispatch_and_collect_limits(self):
+        from ..candidate_budget import search_agent_input, validate_candidate_output
+        state, _ = self._execute(self._plan([self._task("p")]))
+        task = state["execution_plan"]["tasks"][0]
+        task["run_id"] = "r1"
+        original = {"task_id": "p", "scenario_id": None, "run_id": "r1", "objective": "상품 조사"}
+        payload = search_agent_input(task, original)
+        self.assertEqual(payload["candidate_limit"], 3)
+        self.assertNotIn("candidate_limit", original)
+        self.assertEqual(payload["objective"], original["objective"])
+        result = {"task_id": "p", "scenario_id": None, "run_id": "r1", "status": "completed", "data": {"candidates": [{"ref": str(i)} for i in range(3)]}, "evidence_refs": [str(i) for i in range(10)]}
+        validate_candidate_output(task, result)
+        result["data"]["candidates"].append({"ref": "extra"})
+        with self.assertRaisesRegex(SupervisorContractError, "상한 초과"):
+            validate_candidate_output(task, result)
+        result["data"]["candidates"] = []
+        validate_candidate_output(task, result)
+        result["scenario_id"] = "other"
+        with self.assertRaises(SupervisorContractError):
+            validate_candidate_output(task, result)
+
+    def test_candidate_compare_not_split(self):
+        with self.assertRaisesRegex(SupervisorContractError, "단일 전략"):
+            self._execute(self._plan([self._task("a", sid="s_a"), self._task("b", sid="s_b")],
+                {"scenarios": [{"id": "s_a", "label": "A"}, {"id": "s_b", "label": "B"}]},
+                self._intent("compare", "candidate_compare")))
+
+    def _snapshot_source(self, snapshot=None):
+        snapshot = snapshot or {"status": "found", "advice_ref": "a1", "scenario_state": ContractTests._scenario_inputs()}
+        source = {"messages": [{"type": "human", "content": "B안으로 상품을 더 찾아줘"}],
+                  "memory": {"last_advice_ref": "a1"}, "turn_id": "new", "consultation_id": "c1"}
+        calls = []
+        def load(ref):
+            calls.append(ref)
+            return deepcopy(snapshot)
+        return source, SupervisorPorts(load_advice_snapshot=load), calls
+
+    def test_select_previous_branch_raises_limit_to_three(self):
+        source, ports, loads = self._snapshot_source()
+        original = deepcopy(source)
+        state, context = self._execute(self._plan([self._task("p", sid="s_b")], intent=self._intent("continue", ref="a1"), selected_scenario_id="s_b"), source, ports)
+        self.assertEqual(loads, ["a1"])
+        self.assertEqual(source, original)
+        self.assertEqual(state["scenario_state"]["scenarios"], [prepare_scenarios(ContractTests._scenario_inputs())["scenario_state"]["scenarios"][1]])
+        self.assertEqual(state["execution_plan"]["tasks"][0]["candidate_limit"], 3)
+        self.assertEqual(len([o for o in context["observations"] if o["name"] == "prior_advice_snapshot"]), 1)
+
+    def test_selected_branch_refinement_preserves_conditions(self):
+        source, ports, _ = self._snapshot_source()
+        branches = {"scenarios": [{"id": f"new{i}", "label": f"비중 {a}", "assumptions": {"allocation_pct": {"저축": a, "상환": 100-a}}} for i, a in enumerate((70, 50, 30))]}
+        state, _ = self._execute(self._plan([self._task(f"p{i}", sid=f"new{i}") for i in range(3)], branches,
+                    self._intent("compare", "strategy_compare", "a1"), selected_scenario_id="s_b"), source, ports)
+        self.assertEqual(len(state["scenario_state"]["scenarios"]), 3)
+        for i, branch in enumerate(state["scenario_state"]["scenarios"]):
+            self.assertEqual(branch["assumptions"]["horizon_months"], 36)
+            self.assertEqual(branch["assumptions"]["holding_actions"][0]["target_criteria"]["monthly_contribution_krw"], 400000)
+            self.assertEqual(branch["assumptions"]["allocation_pct"]["저축"], (70, 50, 30)[i])
+        self.assertEqual([t["candidate_limit"] for t in state["execution_plan"]["tasks"]], [2, 2, 2])
+
+    def test_selection_needs_verified_snapshot_and_valid_id(self):
+        source, _, _ = self._snapshot_source()
+        decision = self._plan([self._task("p", sid="s_b")], intent=self._intent("continue", ref="a1"), selected_scenario_id="s_b")
+        with self.assertRaisesRegex(SupervisorContractError, "스냅샷"):
+            self._execute(decision, source)
+        _, ports, _ = self._snapshot_source({"status": "found", "advice_ref": "other", "scenario_state": ContractTests._scenario_inputs()})
+        with self.assertRaisesRegex(SupervisorContractError, "스냅샷"):
+            self._execute(decision, source, ports)
+        _, ports, _ = self._snapshot_source()
+        decision["selected_scenario_id"] = "missing"
+        with self.assertRaisesRegex(SupervisorContractError, "존재하지"):
+            self._execute(decision, source, ports)
+
+    def test_prior_contract_is_not_current_verified_baseline(self):
+        scenario = {"baseline_ref": "old_snapshot", "scenarios": [{"id": "s_b", "label": "유지", "assumptions": {"holding_actions": [{"action": "keep", "holding_ref": "h1"}]}}]}
+        source, ports, _ = self._snapshot_source({"status": "found", "advice_ref": "a1", "scenario_state": scenario})
+        with self.assertRaisesRegex(SupervisorContractError, "Unverified baseline_ref"):
+            self._execute(self._plan([self._task("p", sid="s_b")], intent=self._intent("continue", ref="a1"), selected_scenario_id="s_b"), source, ports)
+
+    def test_allocation_validation(self):
+        for invalid in [{"a": 80, "b": 80}, {"a": -10, "b": 110}, {"a": True, "b": 99}, {"a": float("nan"), "b": 100}, {"a": 50}]:
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(SupervisorContractError, "allocation_pct"):
+                prepare_scenarios({"scenarios": [{"label": "비중", "assumptions": {"allocation_pct": invalid}}]})
+        valid = {"a": 33.3, "b": 66.7}
+        state = prepare_scenarios({"scenarios": [{"label": "비중", "assumptions": {"allocation_pct": valid}}]})["scenario_state"]
+        self.assertEqual(state["scenarios"][0]["assumptions"]["allocation_pct"], valid)
+        with self.assertRaisesRegex(SupervisorContractError, "동일한 배분 항목"):
+            prepare_scenarios({"scenarios": [{"label": "A", "assumptions": {"allocation_pct": valid}}, {"label": "B", "assumptions": {"allocation_pct": {"c": 100}}}]})
+
+    def test_limit_changes_invalidate_old_completed_runs(self):
+        from ..candidate_budget import apply_candidate_limits
+        draft = {"tasks": [self._task("p")]}
+        old = normalize_plan(draft, None, False)
+        old["tasks"][0].update(status="completed", run_id="old_run")
+        new = apply_candidate_limits(normalize_plan(draft, old, False), None, old)
+        self.assertEqual(new["revision"], old["revision"] + 1)
+        self.assertEqual(new["tasks"][0]["status"], "pending")
+        self.assertIsNone(new["tasks"][0]["run_id"])
+        new["tasks"][0].update(status="completed", run_id="new_run")
+        again = apply_candidate_limits(normalize_plan(draft, new, False), None, new)
+        self.assertEqual(again, new)
+
+
+class ClarificationTests(unittest.TestCase):
+    """질문 분기와 Profile 필드 계약만 검사하며 실제 모델 판단을 모의 평가하지 않는다."""
+    income = "financial_profile.monthly_net_income_krw"
+    living = "financial_profile.monthly_living_expenses_krw"
+    debt = "financial_profile.monthly_debt_payment_krw"
+    assets = "financial_profile.available_assets_krw"
+    gross = "financial_profile.annual_gross_income_krw"
+
+    def _source(self, text="매달 얼마를 저축할 수 있어?"):
+        return {"messages": [{"type": "human", "content": text}],
+                "turn_id": "t1", "consultation_id": "c1", "phase": "planning"}
+
+    def _inspect(self, fields):
+        return {"kind": "call_tool", "reason": "필수 값 확인", "tool_name": "profile_agent",
+                "tool_input": {"operation": "inspect", "instruction": "지정 필드 조회", "is_temporary": True, "fields": fields}}
+
+    def _ask(self, fields, *, target="profile", scenario_id=None, **extra):
+        return {"kind": "ask_user", "reason": "필수 정보 확인", "pending_input": [
+            {"question": "필요한 조건을 알려주세요.", "fields": fields, "target": target,
+             "scenario_id": scenario_id, **extra}]}
+
+    def _plan(self, *, supplied=None, task_id="fund_1"):
+        return {"kind": "submit_plan", "reason": "현재 범위에서 진행",
+                "intent": {"purpose": "저축 가능액", "operation": "new", "supplied_values": supplied or {},
+                           "profile_update_status": "not_needed"},
+                "execution_plan": {"tasks": [{"task_id": task_id, "agent": "fund", "objective": "가용 금액 계산", "depends_on": []}]}}
+
+    def test_ambiguous_intent_does_not_call_profile(self):
+        calls = []
+        source = self._source("그거 하는 게 좋을까?")
+        before = deepcopy(source)
+        def read(fields):
+            calls.append(fields)
+            raise AssertionError("의도 확인에 프로필 조회 불필요")
+        out = Supervisor(decide=lambda _: self._ask(["intended_subject"], target="supervisor"),
+                         ports=SupervisorPorts(get_profile_fields=read)).run(source, use_graph=False)
+        self.assertEqual(out.next_node, "ask_user")
+        self.assertEqual(out.update["phase"], "waiting_for_user")
+        self.assertEqual(out.update["pending_input"][0]["target"], "supervisor")
+        self.assertEqual(out.update["pending_input"][0]["id"], "ask_01")
+        self.assertEqual(out.tool_calls, 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(source, before)
+        self.assertNotIn("execution_plan", out.update)
+
+    def test_inspection_batches_reuses_and_distinguishes_statuses(self):
+        source = self._source()
+        source["financial_profile"] = {"monthly_debt_payment_krw": 0}
+        source["basic_profile"] = {"owns_home": False, "goals": []}
+        fields = [self.debt, "basic_profile.owns_home", "basic_profile.goals", self.income, self.living, self.assets, self.gross]
+        calls = []
+        def read(paths):
+            calls.append(paths)
+            return {"profile": {"financial_profile": {"monthly_net_income_krw": 3000000}},
+                    "missing_info": ["monthly_living_expenses_krw"],
+                    "field_status": {self.income: "available", self.living: "missing",
+                                     self.assets: "ambiguous", self.gross: "access_denied"}}
+        contexts = []
+        def decide(context):
+            contexts.append(deepcopy(context))
+            return self._inspect(fields) if len(contexts) <= 2 else self._ask([self.living])
+        out = Supervisor(decide=decide, ports=SupervisorPorts(get_profile_fields=read)).run(source, use_graph=False)
+        self.assertEqual(calls, [[self.income, self.living, self.assets, self.gross]])
+        for ctx in contexts[1:]:
+            obs = ctx["observations"][-1]["result"]
+            self.assertEqual(obs["missing_info"], [self.living])
+            self.assertEqual(obs["field_status"][self.debt], "available")
+            self.assertEqual(obs["field_status"]["basic_profile.owns_home"], "available")
+            self.assertEqual(obs["field_status"]["basic_profile.goals"], "available")
+            self.assertEqual(obs["field_status"][self.assets], "ambiguous")
+            self.assertEqual(obs["field_status"][self.gross], "access_denied")
+        self.assertEqual(out.next_node, "ask_user")
+        self.assertEqual(out.update["financial_profile"], {"monthly_debt_payment_krw": 0,
+                         "monthly_net_income_krw": 3000000, "monthly_living_expenses_krw": None})
+        self.assertNotIn("available_assets_krw", source["financial_profile"])
+
+    def test_legacy_read_omission_not_missing_and_optional_missing_not_question(self):
+        contexts = []
+        def decide(context):
+            contexts.append(context)
+            if len(contexts) == 1:
+                return self._inspect([self.income, self.assets, self.living])
+            return self._plan()
+        out = Supervisor(decide=decide, ports=SupervisorPorts(get_profile_fields=lambda _: {
+            "financial_profile": {"monthly_net_income_krw": 3000000, "monthly_living_expenses_krw": None}
+        })).run(self._source("저축 상품을 일반적으로 설명"), use_graph=False)
+        obs = contexts[1]["observations"][-1]["result"]
+        self.assertEqual(obs["field_status"][self.assets], "not_loaded")
+        self.assertEqual(obs["missing_info"], [self.living])
+        self.assertEqual(out.next_node, "plan_validator")
+        self.assertNotIn("pending_input", out.update)
+
+    def test_read_error_and_denial_not_missing_or_retried(self):
+        for mode in ("failed", "access_denied", "unavailable", "not_loaded"):
+            with self.subTest(mode=mode):
+                from ..tools.profile_inspection import inspect_fields
+                calls = []
+                def read(fields):
+                    calls.append(fields)
+                    if mode == "failed":
+                        raise RuntimeError("sensitive error")
+                    return {"status": mode, "profile": {"financial_profile": {"monthly_net_income_krw": 999}}}
+                ports = SupervisorPorts(get_profile_fields=None if mode == "not_loaded" else read)
+                sup = Supervisor(decide=lambda _: {}, ports=ports)
+                state = {"source": self._source(), "observations": []}
+                result = inspect_fields(sup, state, [self.income])
+                self.assertEqual(result["field_status"], {self.income: mode})
+                self.assertEqual(result["missing_info"], [])
+                self.assertEqual(result["profile"], {})
+                state["observations"].append({"name": "profile_agent", "request": self._inspect([self.income])["tool_input"], "result": result})
+                self.assertEqual(inspect_fields(sup, state, [self.income]), result)
+                self.assertEqual(len(calls), 0 if mode == "not_loaded" else 1)
+
+    def test_profile_status_normalization_and_unresolved_values_rejected(self):
+        from ..tools.ports import normalize_profile_result
+        result = normalize_profile_result({"profile": {}, "missing_info": ["monthly_net_income_krw", self.income],
+                                           "field_status": {self.income: "ambiguous"}})
+        self.assertEqual(result["missing_info"], [])
+        self.assertEqual(result["field_status"], {self.income: "ambiguous"})
+        for raw in (
+            {"profile": {"financial_profile": {"monthly_net_income_krw": 3000000}}, "missing_info": [], "field_status": {self.income: "ambiguous"}},
+            {"profile": {}, "missing_info": [self.income], "field_status": {self.income: "available"}},
+            {"profile": {}, "missing_info": [], "field_status": {self.income: "made_up"}},
+            {"profile": {}, "missing_info": [], "field_status": {self.income: "conflict"}, "changes": [{"domain": "financial", "field": "monthly_net_income_krw", "value": 3000000}]},
+        ):
+            with self.subTest(raw=raw), self.assertRaises(SupervisorContractError):
+                normalize_profile_result(raw)
+
+    def test_prepare_ambiguity_does_not_hydrate_or_save(self):
+        calls = []
+        def prepare(request):
+            calls.append(request)
+            return {"profile": {}, "missing_info": [], "field_status": {self.income: "ambiguous", self.gross: "ambiguous"}}
+        decisions = iter([
+            {"kind": "call_tool", "reason": "소득 정보 정리", "tool_name": "profile_agent",
+             "tool_input": {"operation": "prepare", "is_temporary": True, "instruction": "월급 300만 원의 의미 확인"}},
+            self._ask(["income_basis"], target="supervisor"),
+        ])
+        out = Supervisor(decide=lambda _: next(decisions), ports=SupervisorPorts(profile_agent=prepare)).run(self._source("월급 300만원이야. 얼마 저축할까?"), use_graph=False)
+        self.assertEqual(out.next_node, "ask_user")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("financial_profile", out.update)
+        self.assertNotIn("financial_profile_changes", out.update)
+
+    def test_question_dedup_and_id_reservation(self):
+        from ..clarification import merge_pending_questions
+        source = {"pending_input": [{"id": "ask_01", "question": "소득?", "fields": ["monthly_net_income_krw"],
+                                     "target": "profile", "scenario_id": None, "status": "pending"},
+                                    {"id": "ask_02", "question": "목표?", "fields": ["purpose"], "target": "supervisor",
+                                     "scenario_id": None, "status": "resolved", "answers": {"purpose": "저축"}}]}
+        before = deepcopy(source)
+        new = [*self._ask([self.income, "monthly_net_income_krw"])["pending_input"], *self._ask([self.living])["pending_input"]]
+        merged = merge_pending_questions(new, source, None)
+        self.assertEqual(len(merged), 3)
+        self.assertEqual(merged[:2], source["pending_input"])
+        self.assertNotIn(merged[2]["id"], {"ask_01", "ask_02"})
+        self.assertEqual(merged[2]["fields"], [self.living])
+        self.assertEqual(source, before)
+
+    def test_invalid_questions_rejected(self):
+        from ..clarification import merge_pending_questions
+        src = {"pending_input": [{"id": "ask_01", "question": "소득?", "fields": [self.income], "target": "profile", "scenario_id": None, "status": "resolved"}]}
+        for draft in (self._ask([self.income], id="ask_01"), self._ask(["fake_field"]),
+                      self._ask([self.income], target="unknown_task"), self._ask([self.income], scenario_id="unknown"),
+                      self._ask([self.income], answers={self.income: 1}), self._ask([self.income], status="resolved")):
+            with self.subTest(draft=draft), self.assertRaises(SupervisorContractError):
+                merge_pending_questions(draft["pending_input"], src, None)
+
+    def test_specialist_needs_input_scoped_to_existing_task(self):
+        source = self._source()
+        source["scenario_state"] = prepare_scenarios({"scenarios": [{"id": "s1", "label": "가정"}]})["scenario_state"]
+        source["execution_plan"] = {"revision": 1, "tasks": [{"task_id": "fund_a", "agent": "fund", "scenario_id": "s1", "run_id": "r1", "status": "needs_input"}]}
+        source["agent_results"] = {"fund_a": {"run_id": "r1", "plan_revision": 1, "scenario_id": "s1", "status": "needs_input", "needed_fields": [self.living]}}
+        def decide(context):
+            self.assertEqual(context["main_state"]["agent_results"]["fund_a"]["needed_fields"], [self.living])
+            return self._ask([self.living], target="fund_a")
+        out = Supervisor(decide=decide).run(source, use_graph=False)
+        self.assertEqual(out.update["pending_input"][0]["scenario_id"], "s1")
+        self.assertEqual(out.update["pending_input"][0]["target"], "fund_a")
+
+    def test_validated_answer_resume_keeps_turn_and_invalidates_prior_run(self):
+        from ..clarification import resolve_validated_answers
+        source = self._source()
+        source["phase"] = "waiting_for_user"
+        source["intent"] = self._plan()["intent"]
+        source["execution_plan"] = normalize_plan(self._plan()["execution_plan"], None, False)
+        source["execution_plan"]["tasks"][0].update(status="needs_input", run_id="r1")
+        source["pending_input"] = [{"id": "q1", "question": "부채 상환액?", "fields": [self.debt], "target": "fund_1", "scenario_id": None, "status": "pending"}]
+        before = deepcopy(source)
+        for bad in ({"unknown": {self.debt: 0}}, {"q1": {}}, {"q1": {self.debt: None}}, {"q1": {self.debt: -1}}):
+            with self.assertRaises(SupervisorContractError):
+                resolve_validated_answers(source, bad)
+        resumed = {**source, **resolve_validated_answers(source, {"q1": {self.debt: 0}})}
+        self.assertEqual(source, before)
+        self.assertEqual(resumed["turn_id"], "t1")
+        self.assertEqual(resumed["pending_input"][0]["status"], "resolved")
+        self.assertNotIn("financial_profile", resumed)
+        def decide(context):
+            self.assertEqual(context["main_state"]["pending_input"][0]["answers"], {self.debt: 0})
+            return self._plan()
+        out = Supervisor(decide=decide).run(resumed, use_graph=False)
+        self.assertEqual(out.next_node, "plan_validator")
+        self.assertEqual(out.update["execution_plan"]["revision"], 2)
+        self.assertEqual(out.update["execution_plan"]["tasks"][0]["status"], "pending")
+        self.assertIsNone(out.update["execution_plan"]["tasks"][0]["run_id"])
+        self.assertNotIn("financial_profile", out.update)
+        self.assertNotIn("pending_input", out.update)
+
+    def test_pending_questions_block_plan_until_resolved(self):
+        src = self._source()
+        src["pending_input"] = [{"id": "q1", "question": "월 생활비?", "fields": [self.living], "target": "profile", "scenario_id": None, "status": "pending"}]
+        with self.assertRaises(SupervisorContractError):
+            Supervisor(decide=lambda _: self._plan(), max_repairs=0).run(src, use_graph=False)
+
+    def test_rephrase_same_id_and_reject_overlapping_questions(self):
+        from ..clarification import merge_pending_questions
+        src = {"pending_input": [{"id": "q1", "question": "월 소득?", "fields": [self.income],
+                                  "target": "profile", "scenario_id": None, "status": "pending"}]}
+        draft = self._ask([self.income], id="q1")["pending_input"]
+        draft[0]["question"] = "세후 월 실수령액을 원 단위로 알려주세요."
+        result = merge_pending_questions(draft, src, None)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], "q1")
+        self.assertEqual(result[0]["question"], draft[0]["question"])
+        with self.assertRaises(SupervisorContractError):
+            merge_pending_questions(self._ask([self.income, self.living])["pending_input"], src, None)
+
+    def test_prepare_service_denial_drops_payload(self):
+        contexts = []
+        def decide(context):
+            contexts.append(context)
+            if len(contexts) == 1:
+                return {"kind": "call_tool", "reason": "정보 준비", "tool_name": "profile_agent",
+                        "tool_input": {"operation": "prepare", "instruction": "값 확인", "is_temporary": True}}
+            return self._ask(["income_basis"], target="supervisor")
+        ports = SupervisorPorts(profile_agent=lambda _: {"status": "access_denied",
+            "profile": {"financial_profile": {"monthly_net_income_krw": 9876543}}, "missing_info": []})
+        out = Supervisor(decide=decide, ports=ports).run(self._source(), use_graph=False)
+        self.assertEqual(contexts[1]["observations"][-1]["result"], {"status": "failed", "error_code": "profile_access_denied"})
+        self.assertNotIn("9876543", json.dumps(contexts[1]))
+        self.assertNotIn("financial_profile", out.update)

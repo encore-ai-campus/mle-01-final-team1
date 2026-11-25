@@ -29,7 +29,7 @@ class ScenarioBranchSchema(BaseModel):
     id: str | None = Field(default=None, description="작업이 참조할 고유 분기 ID")
     label: str = Field(min_length=1)
     overrides: dict[str, Any] = Field(default_factory=dict, description="임시 프로필 값")
-    assumptions: dict[str, Any] = Field(default_factory=dict, description="horizon_months, holding_actions 등 가정")
+    assumptions: dict[str, Any] = Field(default_factory=dict, description="horizon_months, holding_actions, allocation_pct 등 가정")
 
 
 class ScenarioDraftSchema(BaseModel):
@@ -58,7 +58,8 @@ class DecisionSchema(BaseModel):
     intent: IntentDraftSchema | None = None
     execution_plan: PlanDraftSchema | None = None
     scenario_state: ScenarioDraftSchema | None = Field(default=None, description="submit_plan과 함께 제출할 분기 초안")
-    pending_input: list[dict[str, Any]] | None = None
+    selected_scenario_id: str | None = Field(default=None, description="이전 상담에서 선택한 분기 ID")
+    pending_input: list[dict[str, Any]] | None = Field(default=None, description="ask_user만: question, fields, target, 필요시 id/scenario_id")
     goal_mode: Literal["merge", "replace"] | None = None
 
 

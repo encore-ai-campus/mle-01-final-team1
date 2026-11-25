@@ -18,15 +18,15 @@ class ProfileRequest(TypedDict):
     is_temporary: bool
     current_profile: NotRequired[dict[str, Any]]  # injected by server, not LLM
     operation: NotRequired[Literal["inspect", "prepare"]]
-    fields: NotRequired[list[str]]  # Supervisor read adapter only
+    fields: NotRequired[list[str]]  # explicit read paths; Profile does not infer consultation intent
 
 
 class ProfileResult(TypedDict):
     profile: dict[str, Any]
-    missing_info: list[str]
+    missing_info: list[str]  # canonical missing fields after normalization; not user questions
     changes: NotRequired[list[dict[str, Any]]]
     baseline_ref: NotRequired[str]
-    field_status: NotRequired[dict[str, str]]
+    field_status: NotRequired[dict[str, str]]  # per-field validity/read status (tools/ports.py)
     branch_specs: NotRequired[list[dict[str, Any]]]
     missing_inputs: NotRequired[list[str]]
 
@@ -58,6 +58,7 @@ class Decision(TypedDict):
     intent: NotRequired[dict[str, Any]]
     execution_plan: NotRequired[PlanDraft]
     scenario_state: NotRequired[dict[str, Any]]  # submit_plan과 함께 제출할 내부 분기 초안
+    selected_scenario_id: NotRequired[str]  # verified prior advice branch
     pending_input: NotRequired[list[dict[str, Any]]]
     goal_mode: NotRequired[Literal["merge", "replace"]]
 
@@ -111,6 +112,8 @@ def validate_intent_scenarios(intent: dict[str, Any], scenario: dict[str, Any] |
     """경제적 행동/가정별 비교로 분류된 계획은 독립 분기 없이 발행할 수 없다."""
     validate_plan_intent(intent)
     mode = intent.get("analysis_mode")
+    if mode == "candidate_compare" and len((scenario or {}).get("scenarios", [])) > 1:
+        raise SupervisorContractError("상품·정책 후보 비교는 단일 전략 내부에서 처리하세요. 경제 전략 비교만 분기합니다.")
     comparative = mode == "strategy_compare" or (mode == "roadmap" and intent["operation"] == "compare")
     if comparative and len((scenario or {}).get("scenarios", [])) < 2:
         raise SupervisorContractError(
@@ -137,38 +140,70 @@ def validate_decision(data: dict[str, Any]) -> None:
         raise SupervisorContractError("intent는 dict이어야 합니다.")
     if "scenario_state" in data and (kind != "submit_plan" or not isinstance(data["scenario_state"], dict)):
         raise SupervisorContractError("scenario_state 초안은 submit_plan의 dict로만 제출하세요.")
+    if "selected_scenario_id" in data:
+        sid = data["selected_scenario_id"]
+        if kind != "submit_plan" or not isinstance(sid, str) or not sid.strip():
+            raise SupervisorContractError("selected_scenario_id는 submit_plan의 이전 분기 ID입니다.")
     if kind == "submit_plan":
         validate_plan_intent(data.get("intent"))
 
 
-def validate_questions(items: Any) -> list[dict[str, Any]]:
+def validate_questions(items: Any, *, reserved_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    """질문 초안을 정규화한다. 답변/해결 상태는 LLM이 만들 수 없다."""
+    from .tools.profile_fields import canonical_profile_path
+
     if not isinstance(items, list) or not items:
         raise SupervisorContractError("필수 확인 질문 pending_input이 없습니다.")
-    result = []
-    for i, item in enumerate(items):
+    explicit_ids: set[str] = set()
+    for item in items:
         if not isinstance(item, dict):
             raise SupervisorContractError("질문은 dict이어야 합니다.")
-        question = item.get("question")
-        fields = item.get("fields")
+        sid = item.get("id")
+        if sid is not None:
+            if not isinstance(sid, str) or not sid.strip() or sid != sid.strip():
+                raise SupervisorContractError("질문 ID가 올바르지 않습니다.")
+            if sid in explicit_ids:
+                raise SupervisorContractError("명시 질문 ID가 중복되었습니다.")
+            explicit_ids.add(sid)
+    used_ids = set(reserved_ids or ()) | explicit_ids
+    result = []
+    counter = 1
+    for item in items:
+        if set(item) - {"id", "question", "fields", "target", "scenario_id", "status"}:
+            raise SupervisorContractError("질문 초안에 답변 또는 정의되지 않은 필드를 넣을 수 없습니다.")
+        question, fields = item.get("question"), item.get("fields")
         if not isinstance(question, str) or not question.strip():
             raise SupervisorContractError("비어 있는 사용자 질문을 요청했습니다.")
-        if not isinstance(fields, list) or not fields or not all(isinstance(f, str) and f for f in fields):
+        if not isinstance(fields, list) or not fields or not all(isinstance(f, str) and f.strip() for f in fields):
             raise SupervisorContractError("질문의 fields[]가 올바르지 않습니다.")
-        if not isinstance(item.get("id", f"ask_{i+1:02d}"), str):
-            raise SupervisorContractError("질문 ID가 올바르지 않습니다.")
-        if not isinstance(item.get("target", "supervisor"), str):
+        target = item.get("target", "supervisor")
+        if not isinstance(target, str) or not target.strip() or target != target.strip():
             raise SupervisorContractError("질문 target이 올바르지 않습니다.")
-        # ask_user로 새로 발행하는 질문은 이미 해결된 상태일 수 없다.
+        scenario_id = item.get("scenario_id")
+        if scenario_id is not None and (not isinstance(scenario_id, str) or not scenario_id.strip()):
+            raise SupervisorContractError("질문의 scenario_id가 올바르지 않습니다.")
         if item.get("status", "pending") != "pending":
             raise SupervisorContractError("ask_user 질문은 pending 상태여야 합니다.")
-        normalized = dict(item)
-        normalized.setdefault("id", f"ask_{i+1:02d}")
-        normalized.setdefault("target", "supervisor")
-        normalized.setdefault("status", "pending")
-        normalized.setdefault("scenario_id", None)
-        result.append(normalized)
-    if len({q["id"] for q in result}) != len(result):
-        raise SupervisorContractError("질문 ID가 중복되었습니다.")
+        normalized_fields = []
+        for field in fields:
+            field = field.strip()
+            try:
+                field = canonical_profile_path(field)
+            except SupervisorContractError:
+                # 의도·대상·전문 계산 조건은 프로필 필드가 아니다.
+                if target == "profile" or field.startswith(("basic_profile.", "financial_profile.")):
+                    raise
+            if field not in normalized_fields:
+                normalized_fields.append(field)
+        sid = item.get("id")
+        if sid is None:
+            while f"ask_{counter:02d}" in used_ids:
+                counter += 1
+            sid = f"ask_{counter:02d}"
+            used_ids.add(sid)
+            counter += 1
+        result.append({"id": sid, "question": question.strip(), "fields": normalized_fields,
+                       "target": target, "scenario_id": scenario_id, "status": "pending"})
     return result
 
 

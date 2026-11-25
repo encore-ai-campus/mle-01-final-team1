@@ -6,9 +6,11 @@ from typing import Any
 from ..state import SupervisorWorkingState, ToolObservation
 from ..contracts import (
     SupervisorContractError,
-    validate_plan, validate_questions, validate_intent_scenarios,
+    validate_intent_scenarios,
 )
 from .plan import attach_memory, merged_intent, last_result
+from ..candidate_budget import validate_candidate_limits
+from ..clarification import merge_pending_questions, has_answered_waiting_turn
 from ..tools.profile_fields import FIELDS, METADATA, validate_profile, source_with_reads, attach_read_snapshot
 
 _ALLOWED_INTENT_STATUS = {"not_needed", "pending", "waiting", "done"}
@@ -131,26 +133,14 @@ def run(state: SupervisorWorkingState, *, max_repairs: int) -> dict[str, Any]:
                 from ..tools.scenarios import prepare_scenarios
                 prepare_scenarios(scenario)
             validate_intent_scenarios(patch.get("intent"), scenario)
-            validate_plan(patch.get("execution_plan"), scenario)
+            validate_candidate_limits(patch.get("execution_plan"), scenario)
             route = "plan_validator"
         elif kind == "ask_user":
-            pending = validate_questions(decision.get("pending_input"))
-            # A branch prepared before asking must survive same-turn resumption.
+            # 같은 turn에서 준비된 분기와 기존 질문/답변을 보존한다.
             prepared = last_result(state.get("observations", []), "prepare_scenarios")
             active_scenario = prepared["scenario_state"] if prepared else src.get("scenario_state")
-            scenario_ids = {item["id"] for item in (active_scenario or {}).get("scenarios", [])}
-            for question in pending:
-                if question.get("scenario_id") is not None and question["scenario_id"] not in scenario_ids:
-                    raise SupervisorContractError("pending_input references an unknown scenario_id")
-            old_questions = {q["id"]: deepcopy(q) for q in src.get("pending_input", []) if isinstance(q, dict) and isinstance(q.get("id"), str)}
-            for question in pending:
-                old = old_questions.get(question["id"])
-                if old and old.get("status") == "resolved":
-                    raise SupervisorContractError("A resolved question ID cannot be reused")
-                if old and (old.get("fields") != question.get("fields") or old.get("scenario_id") != question.get("scenario_id")):
-                    raise SupervisorContractError("Use a new question ID for different pending fields")
-                old_questions[question["id"]] = question
-            patch = {"pending_input": list(old_questions.values()), "phase": "waiting_for_user"}
+            pending = merge_pending_questions(decision.get("pending_input"), src, active_scenario)
+            patch = {"pending_input": pending, "phase": "waiting_for_user"}
             if prepared:
                 patch["scenario_state"] = active_scenario
             if "intent" in decision:
@@ -165,6 +155,8 @@ def run(state: SupervisorWorkingState, *, max_repairs: int) -> dict[str, Any]:
             attach_memory(src, state.get("observations", []), patch)
             route = "ask_user"
         elif kind == "compose":
+            if has_answered_waiting_turn(src):
+                raise SupervisorContractError("Newly resolved answers require a current plan before composition")
             _require_current_verified_results(src)
             patch = {"phase": "composing"}
             if "intent" in decision:

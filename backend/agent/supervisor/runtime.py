@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--question", help="새 사용자 질문; 생략하면 직접 입력")
     parser.add_argument("--state-file", type=Path, help="실제 MainState JSON 입력")
     parser.add_argument("--memory-file", type=Path, help="로컬 MVP에 명시적으로 적재할 MemoryWriteRequest 배열")
+    parser.add_argument("--advice-file", type=Path, help="로컬 후속 상담용 명시적 이전 상담 스냅샷 JSON")
     parser.add_argument("--output", type=Path, help="실행 결과/trace JSON 저장")
     parser.add_argument("--state-output", type=Path, help="다음 Graph에 전달할 합성 MainState만 별도 저장")
     parser.add_argument("--quiet", action="store_true", help="실시간 로그 생략 (최종 JSON은 유지)")
@@ -146,7 +147,20 @@ def main(argv: list[str] | None = None) -> int:
         # .env는 실제 실행에서 읽고, 인증 실패를 가짜 응답으로 대체하지 않는다.
         decider = OpenAIDecider.from_env()
         service, namespace, loaded = local_memory(args.memory_file)
-        ports = bind_mvp_ports(memory_service=service, authenticated_user_id=namespace)
+        advice_loader = None
+        if args.advice_file:
+            snapshot = read_json(args.advice_file)
+            if (not isinstance(snapshot, dict) or snapshot.get("status") != "found"
+                    or not isinstance(snapshot.get("advice_ref"), str) or not snapshot["advice_ref"].strip()):
+                raise ValueError("--advice-file은 status=found, advice_ref, scenario_state를 가진 로컬 스냅샷입니다.")
+            memory = state.setdefault("memory", {})
+            if memory.get("last_advice_ref") not in (None, snapshot["advice_ref"]):
+                raise ValueError("상담 스냅샷과 last_advice_ref가 다릅니다.")
+            memory["last_advice_ref"] = snapshot["advice_ref"]
+            def advice_loader(ref: str) -> dict[str, Any]:
+                return deepcopy(snapshot) if ref == snapshot["advice_ref"] else {"status": "unavailable", "advice_ref": ref}
+        ports = bind_mvp_ports(memory_service=service, authenticated_user_id=namespace,
+                               load_advice_snapshot=advice_loader)
         supervisor = Supervisor(decider, ports, trace_sink=trace)
         original = as_jsonable(state)
         result = supervisor.run(state, use_graph=True)
@@ -163,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
                                  if len(decider.usage) == decider.calls and decider.usage and all(k in u for u in decider.usage)},
             "services": {"profile": "actual_mvp" if ports.profile_agent else "unconnected",
                          "profile_db_read": "connected" if ports.get_profile_fields else "unconnected", "memory": "actual_local_in_memory_mvp" if service is not None else "unconnected",
-                         "memory_imported_records": loaded, "memory_persistent": False},
+                         "memory_imported_records": loaded, "memory_persistent": False,
+                         "prior_advice_snapshot": "explicit_local_file" if advice_loader else "unconnected"},
             "main_state_input": original,
             "supervisor_return": {"next_node": result.next_node, "tool_calls": result.tool_calls,
                                   "state_patch": as_jsonable(result.update)},
