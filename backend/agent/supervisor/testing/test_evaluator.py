@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .evaluator import (CASES_PATH, QUESTIONS_PATH, DIMENSIONS, FixtureServices, load_cases, load_questions, profile_fixture, run_case,
-                        summary, usage_total, write_reports)
+                        summary, usage_total, write_reports, evidence_checks, validate_requirements)
 from .semantic_judge import SemanticJudge, normalize_scores
 from ..contracts import SupervisorOutcome
 
@@ -57,6 +57,8 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(len(self.cases),9)
         self.assertEqual(sum(len(c['turns']) for c in self.cases.values()),10)
         self.assertTrue(all(c['criteria_mode']=='reference' for c in self.cases.values()))
+        self.assertTrue(all(t.get('requirements') and not t.get('task_chains') and not t.get('dependencies')
+                            for c in self.cases.values() for t in c['turns']))
         for case in self.cases.values():
             with self.subTest(case=case['id']):
                 profile_fixture(case)
@@ -103,7 +105,7 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(r['agents'],['fund'])
         # No evaluation labels, rubric or required Agent list in the planning input.
         text=json.dumps(decider.contexts,ensure_ascii=False)
-        for label in ('required_agents','allowed_agents','review_focus','branch_count','structural_score'):
+        for label in ('required_agents','allowed_agents','review_focus','branch_count','structural_score','requirement_evidence','원금 기준 계산 지시'):
             self.assertNotIn(label,text)
 
     def test_unnecessary_search_detected(self):
@@ -124,7 +126,7 @@ class EvaluatorTests(unittest.TestCase):
             self.assertEqual(c['criteria_mode'],'general')
             self.assertNotIn('seed',c)
             for t in c['turns']:
-                for k in ('required_agents','allowed_agents','dependencies','branch_count','handoff','followup'):
+                for k in ('required_agents','allowed_agents','dependencies','branch_count','handoff','followup','requirements'):
                     self.assertNotIn(k,t)
         rows=run_case(cases[1],ScriptedDecider([decision([task('q','policy')])]),use_graph=False)
         self.assertTrue(rows[0]['structural_pass'],rows[0].get('checks'))
@@ -139,22 +141,28 @@ class EvaluatorTests(unittest.TestCase):
         rows,_=self.run_script('G-01',[decision([task('f','fund'),task('p','product',['f'])])])
         self.assertFalse(rows[0]['structural_pass'])
 
-    def test_fund_first_search(self):
-        rows,_=self.run_script('G-02',[decision([task('f','fund'),task('p','product',['f'])])])
-        r=rows[0]
-        self.assertTrue(r['structural_pass'],r.get('checks'))
-        self.assertEqual(r['waves'],[['f'],['p']])
-        self.assertEqual(r['candidate_limits']['product'],3)
-        rows,_=self.run_script('G-02',[decision([task('p','product'),task('f','fund',['p'])])])
-        self.assertIn('task_chain_fund_to_product',[c['name'] for c in rows[0]['checks'] if not c['passed']])
+    def test_flexible_plan_order(self):
+        # Natural requests do not dictate which agent must run first.
+        alternatives=[([task('f','fund'),task('p','product',['f'])],[['f'],['p']]),
+                      ([task('p','product'),task('f','fund',['p'])],[['p'],['f']]),
+                      ([task('p','product'),task('f','fund')],None),
+                      ([task('f','fund'),task('p','product',['f']),task('f_last','fund',['p'])],[['f'],['p'],['f_last']])]
+        for cid in ('G-02','G-03'):
+            for tasks,waves in alternatives:
+                with self.subTest(case=cid,tasks=tasks):
+                    rows,_=self.run_script(cid,[decision(tasks)])
+                    r=rows[0]
+                    self.assertTrue(r['structural_pass'],r.get('checks'))
+                    if waves is not None: self.assertEqual(r['waves'],waves)
+                    self.assertEqual(r['candidate_limits']['product'],3)
 
-    def test_fund_search_fund_chain(self):
-        rows,_=self.run_script('G-03',[decision([task('f_first','fund'),task('p','product',['f_first']),task('f_last','fund',['p'])])])
-        r=rows[0]
-        self.assertTrue(r['structural_pass'],r.get('checks'))
-        self.assertEqual(r['waves'],[['f_first'],['p'],['f_last']])
-        # Both types occur and there is a Fund->Product edge, but the recalculation does not depend on the Product.
-        rows,_=self.run_script('G-03',[decision([task('f_first','fund'),task('p','product',['f_first']),task('f_last','fund',['f_first'])])])
+    def test_explicit_chain_contract_still_supported(self):
+        # Only an explicitly constrained custom case may insist on one exact chain.
+        custom=deepcopy(self.cases['G-03'])
+        custom['turns'][0]['task_chains']=[['fund','product','fund']]
+        rows=run_case(custom,ScriptedDecider([decision([task('f_first','fund'),task('p','product',['f_first']),task('f_last','fund',['p'])])]),use_graph=False)
+        self.assertTrue(rows[0]['structural_pass'],rows[0].get('checks'))
+        rows=run_case(custom,ScriptedDecider([decision([task('f_first','fund'),task('p','product',['f_first']),task('f_last','fund',['f_first'])])]),use_graph=False)
         self.assertIn('task_chain_fund_to_product_to_fund',[c['name'] for c in rows[0]['checks'] if not c['passed']])
 
     def test_edit_profile_invalidates_case_specific_rubric(self):
@@ -171,7 +179,9 @@ class EvaluatorTests(unittest.TestCase):
         r=records[0]
         self.assertTrue(r['structural_pass'],r.get('checks'))
         self.assertEqual(r['candidate_limits'],{'product':3,'policy':3})
-        records,_=self.run_script('B-06',[decision([task('p','product'),task('q','policy'),task('f','fund',['p'])])])
+        custom=deepcopy(self.cases['B-06'])
+        custom['turns'][0]['dependencies']=[['policy','fund']]
+        records=run_case(custom,ScriptedDecider([decision([task('p','product'),task('q','policy'),task('f','fund',['p'])])]),use_graph=False)
         self.assertIn('dependency_policy_to_fund',[c['name'] for c in records[0]['checks'] if not c['passed']])
 
     def test_clarification_and_wrong_route(self):
@@ -242,23 +252,65 @@ class EvaluatorTests(unittest.TestCase):
             self.assertEqual(set(x.name for x in root.iterdir()),{'results.json','summary.json','summary.csv','semantic_review_template.csv'})
             self.assertEqual(json.loads((root/'results.json').read_text(encoding='utf-8'))['records'][0]['usage']['total_tokens'],120)
 
+    def test_requirement_evidence_not_derived_from_question(self):
+        turn=self.cases['G-03']['turns'][0]
+        missing=evidence_checks(turn,{},'plan_validator')
+        self.assertEqual(missing['match_pct'],0.0)
+        correct=evidence_checks(turn,{'execution_plan':{'tasks':[{'objective':'2년 안에 2,000만 원 목표를 검토'}]}},'plan_validator')
+        self.assertEqual(correct['match_pct'],100.0)
+        wrong=evidence_checks(turn,{'intent':{'purpose':'12년 안에 120000000원'}},'plan_validator')
+        self.assertEqual(wrong['match_pct'],0.0)
+        self.assertIsNone(evidence_checks(turn,{},'ask_user')['match_pct'])
+        self.assertIsNone(evidence_checks(self.cases['B-06']['turns'][0],{},'ask_user')['match_pct'])
+        validate_requirements(turn['requirements'])
+        with self.assertRaises(ValueError): validate_requirements(turn['requirements']+[turn['requirements'][0]])
+        self.assertEqual(evidence_checks(turn,{'execution_plan':{'tasks':None}},'plan_validator')['match_pct'],0.0)
+
+    def test_plan_and_clarification_denominators(self):
+        ask={'kind':'ask_user','reason':'상품 특정 필요','pending_input':[{'question':'어떤 상품을 말씀하시나요?','fields':['product_ref'],'target':'supervisor'}]}
+        successful,_=self.run_script('G-03',[decision([task('f','fund'),task('p','product')])])
+        unnecessary,_=self.run_script('G-03',[ask])
+        clarified,_=self.run_script('C-04',[ask])
+        rows=successful+unnecessary+clarified
+        totals=summary(rows)
+        self.assertEqual(totals['plan_generation_success_pct_recorded'],50.0)
+        self.assertEqual(totals['clarification_required_success_pct_recorded'],100.0)
+        self.assertEqual(totals['plan_required_but_asked_count'],1)
+        self.assertEqual(totals['first_pass_return_pct_attempted'],100.0)
+        self.assertEqual(totals['tokens_per_successful_required_plan'],240.0)
+        self.assertEqual(totals['valid_plan_count'],1)
+        self.assertIsNone(totals['semantic_requirement_coverage_mean_pct'])
+        with tempfile.TemporaryDirectory() as td:
+            report=write_reports(Path(td),rows,{'planned_turns':4,'planned_required_plan_turns':3,'planned_required_clarification_turns':1})
+        self.assertEqual(report['plan_generation_success_pct_planned'],33.33)
+        self.assertEqual(report['strict_pass_pct_planned'],50.0)
+
     def test_semantic_grading_contract(self):
         raw={k:{'rating':2,'reason':'평가기 계약 검사'} for k in DIMENSIONS}
         raw['efficiency']['rating']=1
         self.assertEqual(normalize_scores(raw)['score'],95)
         invalid=deepcopy(raw); invalid['intent']['rating']=3
         with self.assertRaises(ValueError): normalize_scores(invalid)
+        requirements=self.cases['F-02']['turns'][0]['requirements']
+        raw['requirements']={r['id']:{'rating':2,'reason':'확인'} for r in requirements}
+        raw['requirements'][requirements[0]['id']]['rating']=1
+        self.assertEqual(normalize_scores(raw,requirements)['requirement_coverage_pct'],87.5)
+        invalid=deepcopy(raw); invalid['requirements'].pop(requirements[0]['id'])
+        with self.assertRaises(ValueError): normalize_scores(invalid,requirements)
         answer={'status':'completed','usage':{'input_tokens':300,'output_tokens':50,'total_tokens':350},
                 'output':[{'type':'function_call','name':'grade_supervisor','arguments':json.dumps(raw)}]}
         def response(req,timeout):
             p=json.loads(req.data)
             self.assertEqual(p['tool_choice']['name'],'grade_supervisor')
             self.assertFalse(p['store'])
+            self.assertEqual(set(p['tools'][0]['parameters']['properties']['requirements']['required']),{r['id'] for r in requirements})
+            self.assertEqual(len(json.loads(p['input'])['requirements']),4)
             return BytesIO(json.dumps(answer).encode())
         with patch('agent.supervisor.testing.semantic_judge.urlopen',side_effect=response):
             s=SemanticJudge('test-key','test-judge').score(turn=self.cases['F-02']['turns'][0],fixture={},source={},prior=None,patch={},route='plan_validator',trace=[])
         self.assertEqual(s['score'],95)
         self.assertEqual(s['usage']['total_tokens'],350)
+        self.assertEqual(s['requirement_coverage_pct'],87.5)
 
 
 if __name__=='__main__': unittest.main()
