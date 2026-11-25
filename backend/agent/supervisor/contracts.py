@@ -78,6 +78,7 @@ class Decision(TypedDict):
     execution_plan: NotRequired[PlanDraft]
     scenario_state: NotRequired[dict[str, Any]]  # submit_plan과 함께 제출할 내부 분기 초안
     selected_scenario_id: NotRequired[str]  # verified prior advice branch
+    retry_task_ids: NotRequired[list[str]]  # same-plan execution retry request, not status/run_id
     pending_input: NotRequired[list[dict[str, Any]]]
     goal_mode: NotRequired[Literal["merge", "replace"]]
 
@@ -150,7 +151,7 @@ def validate_decision(data: dict[str, Any]) -> None:
         raise SupervisorContractError("판단 이유 reason이 필요합니다.")
     allowed = {"kind", "reason", "intent"} | {
         "call_tool": {"tool_name", "tool_input"},
-        "submit_plan": {"execution_plan", "scenario_state", "selected_scenario_id", "goal_mode"},
+        "submit_plan": {"execution_plan", "scenario_state", "selected_scenario_id", "goal_mode", "retry_task_ids"},
         "ask_user": {"pending_input", "goal_mode"},
         "compose": {"goal_mode"},
     }[kind]
@@ -173,8 +174,25 @@ def validate_decision(data: dict[str, Any]) -> None:
         sid = data["selected_scenario_id"]
         if kind != "submit_plan" or not isinstance(sid, str) or not sid.strip():
             raise SupervisorContractError("selected_scenario_id는 submit_plan의 이전 분기 ID입니다.")
+    if "retry_task_ids" in data:
+        ids = data["retry_task_ids"]
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_TASKS
+                or any(not isinstance(t, str) or not t.strip() or t != t.strip() for t in ids)
+                or len(set(ids)) != len(ids)):
+            raise SupervisorContractError("retry_task_ids must be unique nonempty current task IDs")
+    if "intent" in data:
+        intent = data["intent"]
+        if "supplied_values" in intent and not isinstance(intent["supplied_values"], dict):
+            raise SupervisorContractError("intent.supplied_values must be a dict when provided")
+        if "profile_update_status" in intent and (not isinstance(intent["profile_update_status"], str)
+                or intent["profile_update_status"] not in PROFILE_UPDATE_STATUSES):
+            raise SupervisorContractError("intent.profile_update_status is invalid")
     if kind == "submit_plan":
-        validate_plan_intent(data.get("intent"))
+        # The draft may omit server-owned/default fields; the published intent must not.
+        intent = data.get("intent")
+        if not isinstance(intent, dict):
+            raise SupervisorContractError("submit_plan에는 intent가 반드시 필요합니다.")
+        validate_plan_intent({"supplied_values": {}, "profile_update_status": "not_needed", **intent})
 
 
 def validate_questions(items: Any, *, reserved_ids: set[str] | None = None) -> list[dict[str, Any]]:
@@ -397,6 +415,7 @@ def normalize_plan(
     *,
     input_changed: bool = False,
     review_rejected: bool = False,
+    retry_task_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SupervisorContractError("계획 생성 결과는 dict이어야 합니다.")
@@ -424,7 +443,7 @@ def normalize_plan(
     old_revision = old.get("revision") if type(old.get("revision")) is int else 0
     changed = old_sig != new_sig or scenario_changed or input_changed
     revision = (old_revision + 1) if changed or not old_revision else old_revision
-    if old_revision and not changed and not review_rejected:
+    if old_revision and not changed and (not review_rejected or retry_task_ids):
         # 동일 계획 재방문은 이미 끝난 전문 작업을 다시 실행하지 않는다.
         # 실행 입력이 바뀌었다면 input_changed/scenario_changed로 새 revision을 만든다.
         for new_task, old_task in zip(cleaned_tasks, old.get("tasks", [])):
@@ -434,6 +453,20 @@ def normalize_plan(
                     and (old_run_id is None or isinstance(old_run_id, str))):
                 new_task["status"] = old_status
                 new_task["run_id"] = old_run_id
+        # Same plan/input: invalidate only selected roots and their transitive dependents.
+        affected = set(retry_task_ids)
+        if affected - {t["task_id"] for t in cleaned_tasks}:
+            raise SupervisorContractError("Retry target is absent from the submitted plan")
+        while True:
+            expanded = affected | {t["task_id"] for t in cleaned_tasks
+                                   if isinstance(t.get("depends_on"), list)
+                                   and any(isinstance(dep, str) and dep in affected for dep in t["depends_on"])}
+            if expanded == affected:
+                break
+            affected = expanded
+        for task in cleaned_tasks:
+            if task["task_id"] in affected:
+                task.update(status="pending", run_id=None)
     retry_count = old.get("review_retry_count", 0)
     if type(retry_count) is not int or not 0 <= retry_count <= 1:
         raise SupervisorContractError("외부 Reflection 재계획 상한을 초과했습니다.")

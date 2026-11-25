@@ -8,7 +8,7 @@ from ..contracts import (
     SupervisorContractError,
     validate_intent_scenarios,
 )
-from .plan import attach_memory, merged_intent, last_result
+from .plan import attach_memory, merged_intent, last_result, server_profile_update_status
 from ..candidate_budget import validate_candidate_limits
 from ..clarification import merge_pending_questions, has_answered_waiting_turn
 from ..tools.profile_fields import FIELDS, METADATA, validate_profile, source_with_reads
@@ -150,10 +150,12 @@ def run(state: SupervisorWorkingState, *, max_repairs: int) -> dict[str, Any]:
                 patch["intent"] = merged_intent(src, decision)
             profile_changes = _profile_pending_changes(state.get("observations", []), src)
             patch.update(profile_changes)
-            if profile_changes:
-                # 실제 저장 완료가 아니라 사용자 승인 대기 상태이다.
+            approval_status = server_profile_update_status(src)
+            if profile_changes or approval_status in {"pending", "waiting"}:
+                # 새로운 변경안 또는 기존 승인 대기 기록은 서버가 관리한다.
                 intent = deepcopy(patch.get("intent") or src.get("intent") or {})
-                intent["profile_update_status"] = "waiting"
+                intent.setdefault("supplied_values", {})
+                intent["profile_update_status"] = "waiting" if profile_changes else approval_status
                 patch["intent"] = intent
             attach_memory(src, state.get("observations", []), patch)
             route = "ask_user"
@@ -168,7 +170,8 @@ def run(state: SupervisorWorkingState, *, max_repairs: int) -> dict[str, Any]:
             route = "final_advice"
         else:
             raise SupervisorContractError(decision.get("reason", "유효하지 않은 Supervisor 판단"))
-        if kind != "ask_user" and _profile_pending_changes(state.get("observations", []), src):
+        if kind != "ask_user" and (server_profile_update_status(src) in {"pending", "waiting"}
+                or _profile_pending_changes(state.get("observations", []), src)):
             raise SupervisorContractError("Profile changes require confirmation before planning/composing")
         intent = patch.get("intent")
         if intent is not None:

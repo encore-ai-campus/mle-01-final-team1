@@ -1,11 +1,11 @@
-# Supervisor 개발 및 연동 가이드 (v27 · 상위 그래프 연동)
+# Supervisor 개발 및 연동 가이드 (v29 · 2차 안정화)
 
-> **기준:** 2026-11-25, GitHub main `855561ccddf9baa8b380138561de566c5ef3caf7` 및 상위 LangGraph 연결 업데이트 적용본.
+> **기준:** 2026-11-25, GitHub main `d7338a749e00cd8e578aa0e941357fbd8f280092`에 v28 Memory 연동 및 v29 Supervisor 안정화 누적 패치를 적용한 상태.
 > **정본 범위:** Supervisor의 내부 판단·입출력 계약과 상위 그래프 연동.
 > **관련 문서:** [멀티에이전트 설계안](./멀티에이전트_설계안.md) · [State 설계안](./State_설계안.md) · [Profile Agent 설계안](./Profile_Agent_설계안.md) · [LangGraph/Langfuse 개발 안내](./LangGraph_Langfuse_개발안내.md).
 > **이력:** [기존 누적 개발 가이드(v14~v27의 상세 변경 및 평가 이력)](https://github.com/encore-ai-campus/mle-01-final-team1/blob/855561ccddf9baa8b380138561de566c5ef3caf7/docs/Supervisor_Developer_Guide.md). 현재 운영 계약과 연동 방법을 본문으로 정리했으며, 과거 버전별 상세 로그는 해당 커밋을 참조한다.
 
-전체 업데이트 ZIP은 프로젝트 루트에 압축을 풀어 포함된 상대 경로만 덮어쓴다. 문서 전용 ZIP은 문서만 변경한다. Supervisor 내부 코드, 개별 Agent, 공용 MainState, 환경 설정 및 잠금 파일은 이번 상위 연결 변경 범위가 아니다.
+v29 ZIP은 프로젝트 루트에 압축을 풀어 포함된 상대 경로만 덮어쓴다. v28을 별도 적용할 필요가 없다. Supervisor 내부 코드와 이 가이드만 갱신한다. 상위 LangGraph, 공용 MainState/AgentInput/AgentOutput, Profile/Memory/개별 Agent, 환경 설정 및 잠금 파일은 유지한다. 최신 main의 상위 그래프 연동 가이드를 보존하여 갱신했다.
 
 ## 1. 목적과 책임 범위
 
@@ -63,7 +63,7 @@ flowchart TD
 | `decision.kind` | 의미 | 다음 경로 |
 |---|---|---|
 | `call_tool` | 필요한 사실 확인 또는 분기 준비 | Tools → Reason |
-| `submit_plan` | 전체 DAG 및 intent, 필요한 분기 초안 제출 | Plan → Finalize |
+| `submit_plan` | 전체 DAG 및 intent, 필요한 분기 초안과 선택적 재실행 대상 제출 | Plan → Finalize |
 | `ask_user` | 진행에 필요한 최소 사용자 입력 또는 변경 승인 요청 | Finalize |
 | `compose` | 이미 실행·검증된 전문 결과의 최종 종합 요청 | Finalize |
 
@@ -169,7 +169,7 @@ backend/agent/
 
 ### 4.1 상위 MainState와 내부 State 분리
 
-`Supervisor.run(main_state)`는 부모 State의 필요한 필드만 복사한다. 기존 20개 공용 MainState 키 및 `agent_outbox` 내부 채널을 유지한다. 상위 `WorkflowState.workflow_report`는 개발용 진단 채널이다. Supervisor 내부 State와 진단 보고서를 공용 State 계약/영속 저장/LLM 입력에 추가하지 않는다.
+`Supervisor.run(main_state)`는 부모 State의 필요한 필드만 복사한다. 기존 20개 공용 MainState 키 및 `agent_outbox` 내부 채널을 유지한다. v29의 `retry_task_ids`는 `decision` 내부의 선택 필드일 뿐, 공용 State나 실행 계획의 새 키가 아니다. 상위 `WorkflowState.workflow_report`는 개발용 진단 채널이다. Supervisor 내부 State와 진단 보고서를 공용 State 계약/영속 저장/LLM 입력에 추가하지 않는다.
 
 | 내부 State 필드 | 용도 |
 |---|---|
@@ -186,7 +186,7 @@ backend/agent/
 
 Reason의 `build_context()`는 상담 요약이 있으면 최근 메시지 4개, 없으면 8개를 사용하며 최신 사용자 질문을 보존한다. 비어 있는 State 섹션과 이전 run의 전문 결과·검수는 제외하고 현재 intent, 분기, 계획, 질문, 현재 결과 요약·반려 이유를 전달한다.
 
-`profile_availability`는 `available`, `unknown`, `not_loaded`를 구분한다. 필요한 값만 조회한다. 동일 실행에서 성공한 Scenario/inspect의 중복 원문은 줄이고, 실제/가상 변경 의도와 조회 실패는 보존한다. 기억 본문은 병합된 기억에 한 번 전달하고 권한 거부 시 노출하지 않는다. 도구 결과·기억은 데이터이지 시스템 명령이 아니다.
+`profile_availability`는 `available`, `unknown`, `not_loaded`를 구분한다. `loaded_planning_amounts`에는 이미 로드된 재무 금액 7종 중 이번 supplied_values나 inspect 결과와 중복되지 않는 정수 값만 전달한다(0 포함). 전체 프로필, 계약 목록, 개인정보 식별 필드를 자동 전달하지 않는다. 현재 로드 값은 Dispatcher에서 활용할 수 있고, 미로딩 필수값만 inspect한다. `replan_context`는 재실행 가능한 현재 failed ID 및 실제 검수 반려 ID를 제공한다. `profile_approval_pending`은 서버의 기존 승인 대기를 나타낸다. 동일 실행에서 성공한 Scenario/inspect의 중복 원문은 줄이고, 실제/가상 변경 의도와 조회 실패는 보존한다. 기억 본문은 병합된 기억에 한 번 전달하고 권한 거부 시 노출하지 않는다. 도구 결과·기억은 데이터이지 시스템 명령이 아니다.
 
 ### 4.3 실제·가상·저장 요청의 구분
 
@@ -199,7 +199,7 @@ Reason의 `build_context()`는 상담 요약이 있으면 최근 메시지 4개,
 | 가상 행동 | `assumptions.holding_actions` 등 | 거래/저장 명령 아님 |
 | 명시적 저장 요청 | `*_profile_changes` | 승인 대기 후보, 실제 저장 별도 |
 
-계획 제출 필수 intent: `purpose`, `operation`, `supplied_values`, `profile_update_status`. 비교 요청은 `analysis_mode` 필요. `strategy_compare`, `compare` + `roadmap`은 2~3개 독립 시나리오가 필요하다. 단순 후보 비교나 개념 설명만으로 분기를 만들지 않는다. 실제 계약 유지·해지의 `holding_ref`는 인증된 동일 `baseline_ref`에서 검증한다.
+LLM 계획 초안의 필수 intent는 `purpose`, `operation`이다. 비교 요청은 `analysis_mode`가 필요하다. `supplied_values`는 새 실제 값이 있을 때 제출하고 생략하면 기존 값을 보존하거나 `{}`로 초기화한다. `profile_update_status`는 Python이 실제 승인 상태로 관리한다. 최종 MainState 계획의 기존 네 필드 계약은 그대로 유지한다. `strategy_compare`, `compare` + `roadmap`은 2~3개 독립 시나리오가 필요하다. 단순 후보 비교나 개념 설명만으로 분기를 만들지 않는다. 실제 계약 유지·해지의 `holding_ref`는 인증된 동일 `baseline_ref`에서 검증한다.
 
 #### 상담 목표와 프로필 반환 계약 (v24 이후 유지)
 
@@ -207,7 +207,7 @@ Reason의 `build_context()`는 상담 요약이 있으면 최근 메시지 4개,
 - 목표액·상대 기간을 `goals[]`에 넣는 것은 구조화 목표 관리가 필요한 경우만 허용한다. 실제 소득과 상담 가정은 구별하고 날짜를 임의 생성하지 않는다.
 - 정확한 기존 도메인 경로 및 제한적으로 허용된 목표/기간 별칭은 정규화한다. 충돌·알 수 없는 키·잘못된 값은 반려한다. `target_amount_krw` 및 `horizon_months`의 상담 조건은 목적/작업 지시로 보존한다.
 - Responses API의 비엄격 함수 스키마(`strict=False`)는 안내 역할이며 최종 Python 검증을 통과해야 한다. 실패한 계획을 임의 보완해 발행하지 않는다.
-- 예: "2년 안에 2천만 원을 모으고 싶어"는 purpose와 Fund objective에 목표액·기간을 넣고 실제 새 프로필이 없으면 `supplied_values: {}`로 제출한다.
+- 예: "2년 안에 2천만 원을 모으고 싶어"는 purpose와 Fund objective에 목표액·기간을 넣고 실제 새 프로필이 없으면 `supplied_values`를 생략할 수 있다. 명시한 값의 허용 키·형식 검증은 유지한다.
 
 ### 4.4 최종 반환
 
@@ -267,7 +267,7 @@ class SupervisorOutcome:
 - 공통 Product/Policy 작업은 **동일 입력·동일 범위의 분기 무관 사실 조회**를 두 분기 이상이 그대로 사용하는 경우만 허용한다. 공통 Fund는 금지한다.
 - 각 분기 Agent는 실제 스냅샷과 자기 분기의 일회성·가상 조건을 사용한다. 최종 분기 간 비교는 상위 비교 준비/Final이 담당한다.
 - 후보는 전략이 아니다. 여러 상품 후보를 모두 적용하거나 후보 수만큼 Fund 전망을 무조건 실행하지 않는다.
-- 변경된 조건/계획은 revision을 올리고 구 결과를 무효화한다. 현재 구현은 전체 작업을 보수적으로 초기화할 수 있다. 변경 작업만 선별 재실행은 후속 최적화다.
+- 변경된 조건/계획은 revision을 올리고 구 결과를 무효화하며 전체 작업을 보수적으로 초기화한다. **동일 계획·동일 입력**의 명시 재실행 또는 현재 run의 검수 반려는 해당 작업과 직·간접 후속 작업만 `pending`, `run_id=null`로 초기화한다. 독립 완료 작업은 유지한다(§9.10).
 
 ### 5.4 상위 Dispatcher / Collector 연동 지침
 
@@ -278,7 +278,7 @@ class SupervisorOutcome:
 3. Adapter는 업무별 Field Set을 선택하고 실제 프로필 → supplied_values → 자기 분기 overrides로 `profile_view`를 구성한다. `profile_view_for_task`는 기존 Profile View/목표 병합 도우미를 재사용한다. 인증된 추가 조회/계약 사실 주입은 서비스에서 구현한다. Adapter가 authoritative 선행 결과/답변/피드백을 대체할 수 없다.
 4. 등록된 Agent만 `Send`로 실행한다. Collector는 실행 ID·분기·revision과 결과 외피, 검색 후보 상한을 검사해 수락 결과만 반영한다. 구 결과나 초과 후보를 후속 작업으로 보내지 않는다.
 5. 독립 실행 작업을 먼저 처리한다. 미등록과 필수 선행 결과 unavailable은 skipped로 기록한다. 실제 실패 또는 needs_input만 실행당 최대 1회 Supervisor 재계획의 대상이다.
-6. 실제 검수 반려 시 기존 `review_retry_count`와 `revision_feedback`을 사용하는 상위 복귀 경로를 마련했다. Evidence/Reflection 및 Final의 실제 판단·종합 기능은 아직 구현하지 않았다.
+6. 실제 검수 반려 시 기존 `review_retry_count`와 `revision_feedback`을 사용한다. v29는 같은 revision에서 선택적 초기화한 작업의 구 run을 현재 결과에서 제외하도록 기존 Collector 계약을 그대로 활용한다. 실행 실패 원인은 현재 결과의 warnings/needed_fields로 판단하고, 검수 반려 사유의 재실행 전달은 상위 `revision_feedback`을 사용한다. 실제 실행 실패 이력의 영속 전달, 결과 외피의 추가 제어키 차단 등 Collector 보완과 Evidence/Reflection/Final 실제 기능은 상위 구현의 책임이다.
 
 `execution_waves`는 DAG를 보여주는 정적 진단이며 실제 Dispatcher가 반드시 고정된 단계별 장벽을 사용해야 한다는 뜻은 아니다.
 
@@ -348,7 +348,7 @@ validate_candidate_output(task, agent_output)  # 검색 작업 결과 수집
 
 ### 6.2 Memory 연동
 
-`retrieve_memory_for_supervisor(service, request, authenticated_user_id=...)` 공개 함수 및 Supervisor의 bind_mvp_ports를 사용한다.
+`MemoryService` / `PostgresMemoryService` 공통 공개 `search_memory(request, authenticated_user_id=...)` 계약을 `bind_mvp_ports`로 연결한다. 기존 `retrieve_memory_for_supervisor`도 같은 검색 계약의 전달 어댑터이다. 로컬 실행에서는 PostgreSQL 드라이버를 불필요하게 import하지 않는다.
 
 | `memory_type` | 활용 |
 |---|---|
@@ -359,11 +359,11 @@ validate_candidate_output(task, agent_output)  # 검색 작업 결과 수집
 
 정밀 조회 예시: `{"query":"적금","limit":5,"memory_types":["user_decision","user_preference"]}`.
 
-반환은 `retrieval_status`와 `retrieved[]`이며 각 항목은 memory_id, memory_type, content, source_ref, 선택 target_ref/metadata를 포함한다. 비활성·폐기 기억을 제외하고 최대 10개 기억을 병합한다. 기본 조회는 연결된 포트에서 새 turn마다 수행하며 질문/관련 키워드 최대 5개 범위, 선호 표현 최대 5개 검색으로 보완한다. 동일 turn 및 상세 요청을 재사용한다.
+반환은 `retrieval_status`와 `retrieved[]`이며 각 항목은 memory_id, memory_type, content, source_ref, 선택 target_ref/metadata를 포함한다. 비활성·폐기 기억을 제외하고 최대 10개 기억을 병합한다. 기본 조회는 연결된 포트에서 새 turn마다 수행하며 질문/관련 키워드 최대 3회, 선호 탐색 최대 2회, 합계 최대 5회(v28)다. 동일 turn의 기본 조회와 동일 실행 내 정규화된 상세 요청을 재사용한다. 실패하면 자동 검색을 중단하고 부분 성공은 보존한다. 권한 거부는 발견한 결과도 비운다. 검색 횟수 축소는 일부 기억의 미발견 가능성이 있으므로 필요한 경우에만 추가 정밀 조회한다.
 
 `found / no_match / failed / access_denied / not_requested`를 구분한다. no_match는 모든 기억이 없다는 뜻이 아니다. 현재 명시적 요청을 과거 선호보다 우선한다. 기억에 나온 금융정보·가입 사실을 현재 확인값으로 사용하지 않는다.
 
-main `855561c`에는 `agent/memory/memory_integration.py`가 추가되어 `build_memory_ports(authenticated_user_id: UUID)`가 `PostgresMemoryService`와 기존 `bind_mvp_ports`를 결합하고, `get_authenticated_memory_ports`는 FastAPI 인증 사용자 의존성을 사용한다. 기본 개발용 `build_workflow()`는 인증된 PostgreSQL 서비스 인스턴스를 자동 연결하지 않는다. 실제 API에서는 사용자별 factory를 주입해야 한다. Memory Writer와 상담 스냅샷 서비스는 실제 답변 전달 후 연결한다.
+main `855561c`에는 `agent/memory/memory_integration.py`가 추가되어 `build_memory_ports(authenticated_user_id: UUID)`가 `PostgresMemoryService`와 기존 `bind_mvp_ports`를 결합하고, `get_authenticated_memory_ports`는 FastAPI 인증 사용자 의존성을 사용한다. 기본 개발용 `build_workflow()`는 인증된 PostgreSQL 서비스 인스턴스를 자동 연결하지 않는다. 실제 API에서는 사용자별 factory를 주입해야 한다. v28부터 Supervisor `bind_authenticated_ports(authenticated_user_id: UUID)`가 ProfileDBService와 PostgresMemoryService를 동일 인증 사용자로 연결한다. Memory Writer와 상담 스냅샷 서비스는 별도 책임이다.
 
 ### 6.3 Scenario Tool
 
@@ -413,7 +413,7 @@ state-file과 question을 함께 전달하면 새 turn을 만들며, state-file�
 
 `llm/openai_api.py`가 OpenAI Responses API에 HTTP POST하며 `supervisor_decision` 함수 단일 반환을 요구한다. `parallel_tool_calls=false`, `store=false`, 비엄격 함수 스키마를 사용한다. Pydantic 및 Python 계약 검사 실패 시 제한된 복구 또는 명시 오류로 종료한다. API 키/HTTP/반환 오류를 Mock 응답으로 바꾸지 않는다. `store=false`만으로 개인정보 보호가 보장되지는 않는다.
 
-`decision: invalid`는 최초 판단이 파싱/구조화 계약 검사를 통과하지 못했다는 뜻이다. 원인은 실제 오류 메시지로 확인해야 한다. 상위 `workflow_input.py` 업데이트는 invalid/plan validation/retry의 진단 사유를 출력하도록 변경하였다. 실패 이유를 확인하기 전 임의로 필수 필드를 완화하지 않는다.
+`decision: invalid`는 최초 판단이 파싱/구조화 계약 검사를 통과하지 못했다는 뜻이다. 원인은 실제 오류 메시지로 확인해야 한다. 상위 `workflow_input.py` 업데이트는 invalid/plan validation/retry의 진단 사유를 출력하도록 변경하였다. 실패 이유를 확인하기 전 의미적으로 필수인 필드를 임의로 완화하지 않는다. v29의 기본값은 의미를 만들지 않는 서버 소유 필드만 처리한다.
 
 ### 7.3 결과 확인
 
@@ -433,25 +433,23 @@ state-file과 question을 함께 전달하면 새 turn을 만들며, state-file�
 
 ## 8. 상위 Graph 연동 예시
 
-인증된 서비스 객체는 요청별로 서버가 준비한다. 프로필 읽기 포트 미구현 시 None을 전달한다.
+인증된 서비스 객체는 요청별로 서버가 준비한다. 실제 Profile·Memory 통합 연결은 다음과 같이 호출한다. 프로필 읽기 포트 미구현 시 기존 bind_mvp_ports를 별도로 사용한다.
 
 ```python
 from agent.supervisor import Supervisor
-from agent.supervisor.tools.integration import bind_mvp_ports
+from agent.supervisor.tools.integration import bind_authenticated_ports
 from agent.workflow import build_workflow
 
 def supervisor_factory():
-    ports = bind_mvp_ports(
-        memory_service=memory_service,
-        authenticated_user_id=authenticated_user_id,
-        get_profile_fields=profile_read_service,
+    ports = bind_authenticated_ports(
+        authenticated_user_id=current_user["user_id"],  # verified UUID
     )
     return Supervisor(ports=ports)
 
 graph = build_workflow(supervisor_factory=supervisor_factory, agents=registry)
 ```
 
-위 예시는 서비스 객체와 인증 ID, registry가 서버에 준비되어 있다는 전제다. 현재 개발 기본 factory는 인증 사용자 미주입이며 registry가 비어 있다. PostgreSQL 인증 Memory 포트 helper를 사용하는 운영 서비스도 동일하게 사용자별 Supervisor에 연결한다. 사용자 ID와 권한을 LLM이 결정하게 하지 않으며 서로 다른 사용자 인스턴스를 혼용하지 않는다.
+위 예시는 인증된 current_user(UUID)와 registry가 서버에 준비되어 있다는 전제다. 실제 사용자 요청별 factory를 만들고 사용자별 포트를 전역 캐시하지 않는다. 현재 개발 기본 factory는 인증 사용자 미주입이며 registry가 비어 있다. PostgreSQL 인증 Memory 포트 helper를 사용하는 운영 서비스도 동일하게 사용자별 Supervisor에 연결한다. 사용자 ID와 권한을 LLM이 결정하게 하지 않으며 서로 다른 사용자 인스턴스를 혼용하지 않는다.
 
 내부 `build_main_supervisor_node()`는 Command(update=outcome.update, goto=outcome.next_node)를 반환한다. 부모 그래프는 기존 반환 계약을 소비하고 `final_advice`만 `final_advice_stage`로 매핑한다. 실제 Agent 등록/Adapter와 실행 예시는 LangGraph/Langfuse 개발 안내를 참조한다.
 
@@ -483,9 +481,10 @@ uv run --locked python -m unittest discover -s tests -p "test_workflow_*.py" -v
 | 시나리오·필수 intent·질문 및 답변 연결 계약 | 기존 구현 |
 | 후보 상한 자동 배정 | 기존 Supervisor 구현 |
 | 후보 상한·최신 선행 결과·AgentBinding·Collector | 상위 연결 패치에서 구현 |
-| 실패/needs_input 및 검수 반려 복귀 | 상위 연결 경로 구현, 실제 통합 검증 필요 |
+| 실패/needs_input 및 검수 반려 복귀 | 기존 복귀 경로 + v29 동일 계획 선택적 재실행, 실제 Graph 통합 검증 필요 |
 | Profile prepare/inspect, 소득 모호성 처리 | v27 계약 구현, 인증 서비스 주입 필요 |
-| 인증 PostgreSQL Memory 포트 | main 855561c에서 생성 helper 구현, 운영 API 주입 필요 |
+| 인증 PostgreSQL Memory 포트 | v28 통합 Profile·Memory 포트 및 조회 최적화, 운영 API 주입 필요 |
+| 서버 기본값 | v29 supplied_values 기본/병합, 승인 상태 자동 관리 |
 | Evidence/Reflection·비교·Final/Guard/Renderer | 실제 금융 기능 미연결 |
 | 자연어 확인 답변 자동 재개, 승인 저장, 상담 스냅샷 | 서비스 연동 필요 |
 | 실제 모델 정확도·비용·Cloud 관측 | 사용자 환경에서 측정 필요 |
@@ -648,6 +647,64 @@ python backend/agent/supervisor/supervisor_test.py --case C-05 --with-profile-pr
 ```
 
 두 번째 명령은 실제 LLM 비용을 발생시키며 반드시 prepare를 호출한다는 뜻은 아니다.
+
+### 9.9 v28 PostgreSQL Memory 연동 (v29 포함)
+
+- `tools/integration.py`: `bind_authenticated_ports()`는 서버가 검증한 UUID로 두 DB 서비스를 읽기 전용 연결한다. 기본 개발 그래프는 자동 인증 연결하지 않는다. `load_advice_snapshot`은 별도 동일 사용자 포트가 구현되면 명시 주입한다.
+- 기본 검색 최대 10회 → 5회(질문/관련어 3회, 선호 2회). 실패 시 자동 연쇄 호출 중단, 부분 결과 유지, 권한 거부 시 결과 전체 제거. 상세 검색의 기본값·유형 순서·공백을 정규화하여 같은 요청의 성공/실패를 동일 실행 내 재사용한다.
+- 반환의 SQL/JSON null metadata는 빈 객체로 처리하고, 미허용 형태·유형은 반려한다. 비활성 기억은 제거하고 허용된 공개 속성만 전달한다. 조회 결과를 현재 금융 사실이나 실제 저장 명령으로 사용하지 않는다.
+- 실제 DB 스키마, 인증, Memory Writer, 이전 상담 스냅샷 저장 및 복원은 운영 통합에서 검증한다. 검색 범위 감소는 일부 기억 미발견 가능성이 있다.
+
+### 9.10 v29 Supervisor 2차 안정화
+
+#### A. 같은 계획 재실행
+
+`retry_task_ids`는 Reason의 `submit_plan` Decision에만 추가한 선택적 ID 목록이다. LLM은 새로운 run_id, status, revision을 직접 지정하지 않는다. 서버가 현재 `phase=executing`이고 실제 run_id가 발행된 `failed` 작업만 재실행 요청 대상으로 허용한다. `replan_context.execution_retry_task_ids`를 확인하고 전체 DAG를 다시 제출한다. 필요한 작업 외의 실패·미등록 skipped를 자동 재실행하지 않는다. `needs_input`은 새로운 정보나 조건 변경, 또는 사용자 확인으로 해결하며 동일 입력의 무조건 재실행을 허용하지 않는다.
+
+예: 동일 intent/전체 DAG를 제출하면서 `retry_task_ids: ["product"]`를 추가한 경우:
+
+| 작업 | 재계획 전 | v29 계획 반환 |
+|---|---|---|
+| Policy | completed, 기존 run | completed, 기존 run 유지 |
+| Product | failed, 실패 run | pending, run_id=null |
+| Fund (Policy·Product 의존) | skipped 또는 기존 결과 | pending, run_id=null |
+| Fund의 후속 작업 | 기존 상태 | pending, run_id=null |
+
+현재 revision은 유지한다. 상위 Validator/Collector는 무효화된 구 run의 결과 및 검수를 제외하고, Dispatcher가 새 run_id를 발급한다. 실제 검수 반려는 현재 task/run/revision/scenario의 완료 결과 및 revise 기록을 확인하고 관련 작업과 후속 작업만 초기화한다. `review_retry_count`는 최대 1회다. 실행 실패의 재계획 상한은 기존 상위 그래프의 `max_execution_replans`(0~1회)를 그대로 사용한다.
+
+재실행 요청이 없고 동일 계획이면 기존 상태를 유지한다. intent, 작업 초안(순서 포함), 시나리오 또는 실제 실행 입력이 변경되면 기존 revision을 올려 전체 작업을 초기화한다. 목적을 불필요하게 바꿔 쓰지 않도록 프롬프트를 보완했다. 변경 계획 간 부분 재사용은 보수적으로 지원하지 않는다. 독립 완료 결과를 유지하더라도 상위 Validator의 최신 결과/후보 검증을 통과해야 한다.
+
+#### B. 서버 소유 기본값과 승인 경계
+
+| 필드 | LLM 초안 | 최종 Python 처리 |
+|---|---|---|
+| purpose, operation | 필수 | 의미 및 허용 값 검사 |
+| analysis_mode | compare면 필수 | 분기 계약 검사 |
+| supplied_values | 새 값이 있을 때만 | 이전 일회성 값 보존·새 값 병합, 없으면 {} |
+| profile_update_status | 모델 노출 스키마에서 제거 | 기존 신뢰 상태 또는 승인 후보로 결정 |
+
+최종 계획의 `validate_plan_intent()` 및 MainState 필드 계약은 변경하지 않는다. legacy 모델 응답의 profile_update_status는 호환용으로 읽을 수 있으나 서버 상태를 덮어쓰지 않는다. 모델이 done을 임의 선언하면 반려한다. `needs_confirmation`은 waiting, pending은 pending으로 관리하며 기존 승인 대기를 not_needed로 덮어써 계획/종합을 발행할 수 없다. 실제 승인/거절/저장 완료 처리는 인증된 상위 서비스가 기존 변경 상태와 intent 상태를 갱신해야 한다. 실제 사용자 정보 및 변경안은 자동 저장하지 않는다. 명시된 잘못된 값·미등록 키는 기존 검증을 통과해야 한다. API 스키마의 optional null은 어댑터가 생략으로 처리한다.
+
+#### C. 판단 Context 및 토큰
+
+`loaded_planning_amounts`에는 이미 로드된 월 순소득·연 세전소득·월 생활비·월 부채상환액·가용/총자산·총부채 중 유효한 원 단위 정수 최대 7개를 포함한다. supplied_values와 이전 inspect 관찰에 같은 필드가 있으면 생략한다. 새 DB 조회나 계산, 저장을 하지 않는다. 프로필 전체·보유 상품·부채 상세·생년월일 등은 자동 노출하지 않는다. 기존 필드 가용성 정보와 함께 제공하여 동일 숫자를 얻기 위한 추가 Reason→Tools→Reason 왕복을 줄이는 것이 목적이다. 단순 질문에서도 이미 로드된 금액이 포함될 수 있으므로 실제 데이터 최소화 및 토큰 효율은 서비스 정책과 실측을 통해 확인한다.
+
+반복된 지시를 간소화하고 서버 관리 필드는 LLM 함수 스키마에서 제외했다. 반환 스키마 자체의 검증은 유지하고 신규 retry_task_ids 필드를 추가했다. 동일 모델/문항에서 실제 토큰·첫 반환 성공률·호출 수를 재측정해야 하며 바이트 크기 감소를 실제 토큰 절감으로 확정하지 않는다.
+
+#### D. 적용 및 검증 범위
+
+- v28 포함 누적 변경: `contracts.py`, `llm/adapter.py`, `llm/prompts.py`, `nodes/plan.py`, `nodes/reason.py`, `nodes/finalize.py`, `nodes/tools.py`, `tools/integration.py`, `tools/ports.py`, `testing/test_contracts.py`, 이 가이드. 공용 State/상위 그래프 파일/전문 Agent 및 기존 평가셋은 그대로 유지한다.
+- 신규 v29 오프라인 검사 11개(기본값/HTTP 반환, 이전 값 병합, 잘못된 값/승인 우회 방지, 동일 계획 선택적 재실행, 재실행 범위 검증, 변경 revision, 현재 검수 반려, Context 중복 제거, 실제 최신 workflow_control의 결과 재사용 및 배정). 전체 Supervisor 계약 검사 96개 중 90개 통과, 6개 환경 의존 검사 미실행; 기존 평가기 검사 20/20 통과. 최신 `workflow_control.py` 원본(해시 461ffeb)을 연결하여 순수 제어 함수를 검증했다. 실제 LangGraph 전체 실행, Profile 실연동 4개 검사, PostgreSQL 드라이버 검사 및 API/실DB는 현재 환경에서 검증하지 않았다.
+
+```powershell
+cd backend
+uv run --locked python agent/supervisor/supervisor_main.py --regression
+uv run --locked python -m unittest agent.supervisor.testing.test_contracts.V29StabilityTests -v
+uv run --locked python -m unittest discover -s tests -p "test_workflow_*.py" -v
+uv run --locked python agent/supervisor/supervisor_test.py
+```
+
+마지막 명령만 실제 LLM 평가 비용을 발생시킨다. 기존 v26 평가 버전/질문은 유지하여 v27 로그와 같은 세 질문으로 비교할 수 있다. 기본 평가의 Profile/Memory 데이터는 fixture이고 실제 전문 Agent를 실행하지 않으므로 DB 및 통합 성공으로 해석하지 않는다. 현재 상위 그래프의 반환 외피 강화, 실행 실패 사유의 실제 Agent 전달, 자연어 답변 재개·인증 API 주입은 후속 상위 통합 작업이다.
 
 ---
 

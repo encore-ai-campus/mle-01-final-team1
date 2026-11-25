@@ -235,7 +235,7 @@ def normalize_profile_result(data: Any, *, current_profile: dict[str, Any] | Non
     return result
 
 
-# Memory MVP PR #4의 공개 입출력 계약을 그대로 사용한다.
+# 인메모리 및 PostgreSQL Memory 서비스의 동일 공개 입출력 계약을 사용한다.
 MEMORY_TYPES = ("user_preference", "user_decision", "consultation_summary", "recommendation")
 MEMORY_STATUSES = {"found", "no_match", "access_denied", "failed"}
 
@@ -251,6 +251,14 @@ def validate_memory_request(data: dict[str, Any]) -> None:
     if types is not None and (not isinstance(types, list) or not types or
                               any(t not in MEMORY_TYPES for t in types)):
         raise SupervisorContractError("Memory memory_types는 등록된 네 유형의 목록이어야 합니다.")
+
+
+def memory_request_key(data: dict[str, Any]) -> tuple[str, int, tuple[str, ...]]:
+    """같은 검색의 기본값·유형 순서·바깥 공백만 정규화한 실행 내부 재사용 키."""
+    validate_memory_request(data)
+    types = data.get("memory_types") or MEMORY_TYPES
+    # 내부 공백/검색어 의미는 변경하지 않는다. DB collation도 가정하지 않는다.
+    return (data["query"].strip(), data.get("limit", 5), tuple(sorted(set(types))))
 
 
 def memory_key(item: dict[str, Any]) -> str:
@@ -271,12 +279,16 @@ def select_memory_items(items: list[dict[str, Any]], limit: int = 10) -> list[di
 
 
 def normalize_memory_result(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or data.get("retrieval_status") not in MEMORY_STATUSES:
+    if (not isinstance(data, dict) or not isinstance(data.get("retrieval_status"), str)
+            or data["retrieval_status"] not in MEMORY_STATUSES):
         raise SupervisorContractError("MemorySearchResult.retrieval_status가 올바르지 않습니다.")
+    status = data["retrieval_status"]
+    # 접근 거부는 항상 우선한다. 잘못된 부가 데이터가 있어도 노출하지 않는다.
+    if status == "access_denied":
+        return {"retrieval_status": status, "retrieved": []}
     items = data.get("retrieved")
     if not isinstance(items, list):
         raise SupervisorContractError("MemorySearchResult.retrieved는 list이어야 합니다.")
-    status = data["retrieval_status"]
     if status != "found":
         return {"retrieval_status": status, "retrieved": []}
     clean = []
@@ -285,10 +297,15 @@ def normalize_memory_result(data: Any) -> dict[str, Any]:
                 any(not isinstance(item.get(k), str) or not item[k].strip()
                     for k in ("memory_id", "content", "source_ref"))):
             raise SupervisorContractError("MemoryItem 필수 필드가 잘못되었습니다.")
-        metadata = item.get("metadata") or {}
+        metadata = item.get("metadata")
+        if metadata is None:
+            metadata = {}
         if not isinstance(metadata, dict):
             raise SupervisorContractError("MemoryItem.metadata는 dict이어야 합니다.")
-        if metadata.get("status") in {"expired", "superseded", "deleted", "inactive", "revoked"}:
+        state = metadata.get("status")
+        if state is not None and not isinstance(state, str):
+            raise SupervisorContractError("MemoryItem.metadata.status는 문자열이어야 합니다.")
+        if isinstance(state, str) and state.strip().lower() in {"expired", "superseded", "deleted", "inactive", "revoked"}:
             continue
         saved = {k: item[k] for k in ("memory_id", "memory_type", "content", "source_ref")}
         if "target_ref" in item and (item["target_ref"] is None or isinstance(item["target_ref"], str)):
