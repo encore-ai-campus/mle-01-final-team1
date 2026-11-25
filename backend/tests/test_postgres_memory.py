@@ -1,5 +1,7 @@
+
 from uuid import uuid4
 
+import psycopg
 import pytest
 
 from agent.memory.postgres_memory_service import PostgresMemoryService
@@ -11,8 +13,21 @@ def service():
 
 
 @pytest.fixture
-def test_user_id():
-    return f"postgres_test_{uuid4().hex}"
+def test_user_id(service):
+    # Each test gets a unique user ID.
+    user_id = f"postgres_test_{uuid4().hex}"
+
+    yield user_id
+
+    # Cleanup runs even if the test assertion fails.
+    # Only remove records belonging to this test user.
+    with psycopg.connect(**service.connection_config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memories WHERE user_id = %s",
+                (user_id,),
+            )
+        conn.commit()
 
 
 @pytest.fixture
@@ -34,7 +49,6 @@ def test_save_and_search(service, test_user_id, sample_request):
 
     assert saved["status"] == "saved"
 
-    # 다른 서비스 객체에서도 PostgreSQL 기록을 조회할 수 있어야 한다.
     another_service = PostgresMemoryService()
 
     result = another_service.search_memory(
@@ -64,14 +78,16 @@ def test_duplicate_prevention(service, test_user_id, sample_request):
 
 
 def test_user_isolation(service, test_user_id, sample_request):
-    service.save_memory(
+    saved = service.save_memory(
         sample_request,
         authenticated_user_id=test_user_id,
     )
 
+    assert saved["status"] == "saved"
+
     result = service.search_memory(
         {"query": "savings product B"},
-        authenticated_user_id="another_test_user",
+        authenticated_user_id=f"other_{uuid4().hex}",
     )
 
     assert result["retrieval_status"] == "no_match"
