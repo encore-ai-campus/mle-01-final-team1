@@ -3,12 +3,17 @@ import re
 from copy import deepcopy
 from typing import Any, NotRequired, TypedDict
 from uuid import uuid4
+from agent.profile.profile_validation import inspect_profile_fields
+from agent.profile.income_extraction import extract_income_info
+from agent.profile.profile_change_policy import build_income_changes
 
 
 class ProfileRequest(TypedDict):
     instruction: str
     is_temporary: bool
     current_profile: NotRequired[dict[str, Any]]
+    required_fields: NotRequired[list[str]]
+    change_requested: NotRequired[bool]
 
 
 class ProfileResult(TypedDict):
@@ -17,6 +22,8 @@ class ProfileResult(TypedDict):
     changes: NotRequired[list[dict[str, Any]]]
     baseline_ref: NotRequired[str]
     field_status: NotRequired[dict[str, str]]
+    extracted_info: NotRequired[list[dict[str, Any]]]
+    ambiguities: NotRequired[list[dict[str, Any]]]
 
 
 def extract_monthly_income(text: str) -> int | None:
@@ -87,6 +94,7 @@ def run_profile_agent(request: ProfileRequest) -> ProfileResult:
     current_profile = deepcopy(request.get("current_profile") or {})
     basic = current_profile.get("basic_profile") or {}
     financial = current_profile.get("financial_profile") or {}
+    
 
     result: ProfileResult = {
         "profile": {},
@@ -97,26 +105,62 @@ def run_profile_agent(request: ProfileRequest) -> ProfileResult:
     hypothetical = is_temporary or bool(
         re.search(r"이라면|라면|된다면|되면|가정", instruction)
     )
-    save_requested = bool(
-        re.search(r"저장해|저장할|기록해|등록해|수정해", instruction)
+    
+    # Explicit instruction takes precedence over legacy text detection.
+    change_requested = request.get("change_requested")
+
+    if change_requested is not None and type(change_requested) is not bool:
+        raise ValueError("change_requested must be a boolean")
+
+    save_requested = (
+        change_requested
+        if change_requested is not None
+        else bool(re.search(r"저장해|저장할|기록해|등록해|수정해", instruction))
     )
 
-    # 1. 월소득 처리
-    income = extract_monthly_income(instruction)
 
-    if income is not None:
-        if save_requested and not hypothetical:
-            result["changes"].append({
-                "change_id": f"change_{uuid4().hex}",
-                "domain": "financial",
-                "field": "monthly_net_income_krw",
-                "value": income,
+    # 1. Income extraction and normalization
+    income_facts = extract_income_info(instruction)
+
+    result["extracted_info"] = income_facts
+    result["ambiguities"] = []
+
+    for fact in income_facts:
+        target_field = fact["target_field"]
+
+        # No supported DB field: do not invent or convert values.
+        if target_field is None:
+            reason = (
+                "tax_basis_unknown"
+                if fact["tax_basis"] == "unknown"
+                else "unsupported_income_field"
+            )
+
+            result["ambiguities"].append({
+                "type": reason,
+                "raw_text": fact["raw_text"],
+                "amount_krw": fact["amount_krw"],
             })
-        else:
-            financial["monthly_net_income_krw"] = income
-            result["profile"]["financial_profile"] = {
-                "monthly_net_income_krw": income
-            }
+            continue
+
+        field = target_field.split(".", 1)[1]
+        amount = fact["amount_krw"]
+
+        # Hypothetical information must never become a saved change.
+        if hypothetical:
+            result["profile"].setdefault(
+                "financial_profile", {}
+            )[field] = amount
+
+
+    # Generate proposals separately from income extraction.
+    income_changes = build_income_changes(
+        income_facts,
+        change_requested=save_requested,
+        is_temporary=hypothetical,
+    )
+
+    result["changes"].extend(income_changes)
 
     # 2. 비상금 목표 추가 처리
     new_goal = extract_emergency_goal(instruction)
@@ -157,7 +201,7 @@ def run_profile_agent(request: ProfileRequest) -> ProfileResult:
                         "value": updated_goals,
                     })
 
-    # 3. 필요한 누락 정보 검사
+    # 3. 기존 누락 정보 검사
     effective_profile = {
         "basic_profile": basic,
         "financial_profile": financial,
@@ -166,6 +210,21 @@ def run_profile_agent(request: ProfileRequest) -> ProfileResult:
     for field in find_missing_info(instruction, effective_profile):
         if field not in result["missing_info"]:
             result["missing_info"].append(field)
+
+    # 4. Supervisor가 지정한 프로필 필드 검증
+    required_fields = request.get("required_fields")
+
+    if required_fields is not None:
+        validation = inspect_profile_fields(
+            required_fields=required_fields,
+            profile=effective_profile,
+        )
+
+        result["field_status"] = validation["field_status"]
+
+        for field in validation["missing_info"]:
+            if field not in result["missing_info"]:
+                result["missing_info"].append(field)
 
     return result
 

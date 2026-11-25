@@ -4,55 +4,52 @@ from copy import deepcopy
 from agent.profile.profile_agent import run_profile_agent
 
 
-def test_tc01_income_extraction():
-    result = run_profile_agent({
-        "instruction": "세후 월급 300만 원으로 계산해 줘",
+def run(instruction, **kwargs):
+    return run_profile_agent({
+        "instruction": instruction,
         "is_temporary": False,
+        **kwargs,
     })
 
-    assert result["profile"]["financial_profile"]["monthly_net_income_krw"] == 3000000
+
+def test_tc01_consultation_income_extraction():
+    result = run("세후 월급 300만 원으로 계산해 줘")
+
     assert result["changes"] == []
-    assert result["missing_info"] == []
+    assert result["extracted_info"][0]["amount_krw"] == 3000000
+    assert result["extracted_info"][0]["target_field"] == (
+        "financial_profile.monthly_net_income_krw"
+    )
 
 
-def test_tc02_income_save_candidate():
-    result = run_profile_agent({
-        "instruction": "월급 350만 원으로 저장해 줘",
-        "is_temporary": False,
-    })
+def test_tc02_ambiguous_income_not_saved():
+    result = run("월급 350만 원으로 저장해 줘")
 
     assert result["profile"] == {}
-    assert len(result["changes"]) == 1
-
-    change = result["changes"][0]
-    assert change["change_id"].startswith("change_")
-    assert change["domain"] == "financial"
-    assert change["field"] == "monthly_net_income_krw"
-    assert change["value"] == 3500000
+    assert result["changes"] == []
+    assert result["ambiguities"]
+    assert result["extracted_info"][0]["amount_krw"] == 3500000
+    assert result["extracted_info"][0]["tax_basis"] == "unknown"
 
 
 def test_tc03_hypothetical_not_saved():
-    result = run_profile_agent({
-        "instruction": "내년 월급이 350만 원이라면?",
-        "is_temporary": False,
-    })
+    result = run("세후 월급 350만 원이라면?")
 
-    assert result["profile"]["financial_profile"]["monthly_net_income_krw"] == 3500000
     assert result["changes"] == []
+    assert result["extracted_info"][0]["amount_krw"] == 3500000
 
 
 def test_tc04_missing_information():
-    result = run_profile_agent({
-        "instruction": "매달 얼마를 저축할 수 있어?",
-        "is_temporary": False,
-        "current_profile": {
+    result = run(
+        "매달 얼마를 저축할 수 있어?",
+        current_profile={
             "financial_profile": {
                 "monthly_net_income_krw": 3000000,
                 "monthly_living_expenses_krw": None,
                 "monthly_debt_payment_krw": None,
             }
         },
-    })
+    )
 
     assert result["missing_info"] == [
         "monthly_living_expenses_krw",
@@ -76,13 +73,12 @@ def test_tc05_goal_addition_preserves_existing():
     }
     before = deepcopy(original)
 
-    result = run_profile_agent({
-        "instruction": "비상금 1,000만 원 목표도 추가해 줘",
-        "is_temporary": False,
-        "current_profile": original,
-    })
+    result = run(
+        "비상금 1,000만 원 목표도 추가해 줘",
+        current_profile=original,
+    )
 
-    assert original == before  # 원본 프로필 변경 금지
+    assert original == before
     assert result["missing_info"] == []
     assert len(result["changes"]) == 1
 
@@ -96,3 +92,34 @@ def test_tc05_goal_addition_preserves_existing():
     assert goals[1]["goal_type"] == "emergency_fund"
     assert goals[1]["target_amount_krw"] == 10000000
     assert goals[1]["goal_id"] is None
+
+
+def test_tc06_net_income_save_candidate():
+    result = run("세후 월급 300만 원 저장해 줘")
+
+    assert len(result["changes"]) == 1
+
+    change = result["changes"][0]
+    assert change["change_id"].startswith("change_")
+    assert change["domain"] == "financial"
+    assert change["field"] == "monthly_net_income_krw"
+    assert change["value"] == 3000000
+
+
+def test_tc07_gross_annual_income_save_candidate():
+    result = run("세전 연봉 4,500만 원 저장해 줘")
+
+    assert len(result["changes"]) == 1
+
+    change = result["changes"][0]
+    assert change["field"] == "annual_gross_income_krw"
+    assert change["value"] == 45000000
+
+
+def test_tc08_gross_monthly_income_not_converted():
+    result = run("세전 월급 350만 원 저장해 줘")
+
+    assert result["changes"] == []
+    assert result["extracted_info"][0]["amount_krw"] == 3500000
+    assert result["extracted_info"][0]["target_field"] is None
+    assert result["ambiguities"]
