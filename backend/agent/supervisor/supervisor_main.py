@@ -14,6 +14,7 @@ from copy import deepcopy
 from typing import Any
 from .contracts import Decision, SupervisorOutcome, SupervisorContractError, execution_waves, scenario_plan_view
 from .state import SupervisorWorkingState, copy_main_source, create_working_state
+from .state_policy import checked_node_update
 from .tools.ports import SupervisorPorts
 from .tools.profile_fields import validate_profile, FIELDS
 from .tools.memory import initial_memory
@@ -78,7 +79,7 @@ class Supervisor:
         return state
 
     def reason(self, state: SupervisorWorkingState) -> dict[str, Any]:
-        result = reason_node.run(self, state)
+        result = checked_node_update("reason", reason_node.run(self, deepcopy(state)))
         self._emit("reason", result, route=reason_node.route({**state, **result}))
         return result
 
@@ -88,7 +89,7 @@ class Supervisor:
 
     def tools(self, state: SupervisorWorkingState) -> dict[str, Any]:
         try:
-            result = tools_node.run(self, state)
+            result = tools_node.run(self, deepcopy(state))
         except SupervisorContractError as exc:
             if state.get("tool_calls", 0) >= self.max_tool_calls:
                 raise
@@ -97,13 +98,14 @@ class Supervisor:
                 "name": decision["tool_name"], "request": deepcopy(decision["tool_input"]),
                 "result": {"status": "failed", "error_code": "invalid_tool_request", "message": str(exc)},
             }], "tool_calls": state.get("tool_calls", 0) + 1}
+        result = checked_node_update("tools", result)
         # 누적 관찰 전체를 복제하지 않고 방금 실행된 도구의 요청/반환만 표시한다.
         self._emit("tools", {"observation": result["observations"][-1],
                              "tool_calls": result["tool_calls"]}, route="reason")
         return result
 
     def plan(self, state: SupervisorWorkingState) -> dict[str, Any]:
-        result = plan_node.run(self, state)
+        result = checked_node_update("plan", plan_node.run(self, deepcopy(state)))
         trace_output = dict(result)
         if self.trace_sink is not None and not result.get("candidate_error"):
             patch = result["candidate_patch"]
@@ -115,7 +117,7 @@ class Supervisor:
         return result
 
     def finalize(self, state: SupervisorWorkingState) -> dict[str, Any]:
-        result = finalize_node.run(state, max_repairs=self.max_repairs)
+        result = checked_node_update("finalize", finalize_node.run(deepcopy(state), max_repairs=self.max_repairs))
         self._emit("finalize", result, route=finalize_node.route({**state, **result}))
         return result
 

@@ -9,8 +9,88 @@ from decimal import Decimal
 
 from ..contracts import MAX_SCENARIOS, SupervisorContractError
 
-_ALLOWED_ACTIONS = {"keep", "terminate", "subscribe"}
+_ALLOWED_ACTIONS = ("keep", "terminate", "subscribe")
 from .profile_fields import validate_overlay
+
+# Fixed schema keys are shared by the API schema and the Python validator.
+ASSUMPTION_PROPERTIES = {
+    "horizon_months": {"type": "integer", "minimum": 1, "maximum": 600},
+    "allocation_pct": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0, "maximum": 100}},
+    "goal_mode": {"type": "string", "enum": ["merge", "replace"]},
+    "notes": {"type": "string", "description": "Additional hypothetical conditions; specialist interprets them, not a State patch"},
+}
+CRITERIA_PROPERTIES = {
+    "monthly_contribution_krw": {"type": "integer", "minimum": 1},
+    "term_months": {"type": "integer", "minimum": 1, "maximum": 600},
+    "annual_rate_pct": {"type": "number"},
+    "product_type": {"type": "string"},
+    "product_ref": {"type": "string", "description": "Search hint only"},
+    "notes": {"type": "string"},
+}
+ACTION_PROPERTIES = {
+    "action": {"type": "string", "enum": list(_ALLOWED_ACTIONS)},
+    "holding_ref": {"type": ["string", "null"]},
+    "status": {"type": ["string", "null"], "enum": ["hypothetical", "planned", None]},
+    "target_criteria": {"type": "object", "properties": CRITERIA_PROPERTIES, "additionalProperties": False},
+}
+ASSUMPTION_PROPERTIES["holding_actions"] = {"type": "array", "items": {"type": "object", "properties": ACTION_PROPERTIES,
+                                            "required": ["action"], "additionalProperties": False}}
+
+
+def assumption_json_schema() -> dict[str, Any]:
+    return {"type": "object", "properties": deepcopy(ASSUMPTION_PROPERTIES), "additionalProperties": False}
+
+
+def _only_fields(value: Any, allowed: Any, label: str) -> None:
+    if not isinstance(value, dict):
+        raise SupervisorContractError(f"{label}: object required")
+    unknown = set(value) - set(allowed)
+    if unknown:
+        keys = ", ".join(sorted(str(k)[:64] for k in unknown)[:8])
+        raise SupervisorContractError(f"{label}: unsupported keys {keys}; use registered keys or assumptions.notes / objective")
+
+
+def normalize_holding_actions(actions: Any, baseline: str | None, *, conditional: bool = False) -> list[dict[str, Any]]:
+    if not isinstance(actions, list):
+        raise SupervisorContractError("holding_actions must be a list")
+    normalized_actions: list[dict[str, Any]] = []
+    seen_holdings: set[str] = set()
+    for a in actions:
+        _only_fields(a, ACTION_PROPERTIES, "holding_actions")
+        action = a.get("action")
+        if action not in _ALLOWED_ACTIONS:
+            raise SupervisorContractError("Invalid hypothetical holding action")
+        ref = a.get("holding_ref")
+        if ref is not None and (not isinstance(ref, str) or not ref.strip()):
+            raise SupervisorContractError("Invalid holding_ref")
+        if a.get("status") not in (None, "hypothetical", "planned"):
+            raise SupervisorContractError("A hypothetical action cannot be applied/completed")
+        normalized = deepcopy(a)
+        if action in ("keep", "terminate"):
+            if not conditional and (not ref or not baseline):
+                raise SupervisorContractError("keep/terminate requires baseline_ref and holding_ref")
+            if ref is not None:
+                if ref in seen_holdings:
+                    raise SupervisorContractError("Duplicate or conflicting holding actions")
+                seen_holdings.add(ref)
+            if "target_criteria" in a:
+                raise SupervisorContractError("target_criteria is only for subscribe")
+        else:
+            if ref is not None:
+                raise SupervisorContractError("subscribe cannot reference an existing holding")
+            criteria = a.get("target_criteria", {})
+            _only_fields(criteria, CRITERIA_PROPERTIES, "subscribe.target_criteria")
+            for key in ("monthly_contribution_krw", "term_months"):
+                if key in criteria and (type(criteria[key]) is not int or criteria[key] < 1 or (key == "term_months" and criteria[key] > 600)):
+                    raise SupervisorContractError(f"Invalid {key}: positive integer required")
+            if "annual_rate_pct" in criteria and (type(criteria["annual_rate_pct"]) not in (int, float) or not math.isfinite(criteria["annual_rate_pct"])):
+                raise SupervisorContractError("Invalid annual_rate_pct: finite number required")
+            for key in ("product_type", "product_ref", "notes"):
+                if key in criteria and (not isinstance(criteria[key], str) or not criteria[key].strip()):
+                    raise SupervisorContractError(f"Invalid target_criteria.{key}: nonempty string required")
+            normalized["status"] = "hypothetical"
+        normalized_actions.append(normalized)
+    return normalized_actions
 
 
 def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
@@ -18,8 +98,7 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
 
     사용자 금융정보 원본은 변경하지 않으며, 실제 상품 존재/자격/수익도 검증하지 않는다.
     """
-    if not isinstance(args, dict):
-        raise SupervisorContractError("시나리오 준비 입력은 dict이어야 합니다.")
+    _only_fields(args, {"scenarios", "baseline_ref"}, "scenario_state")
     items = args.get("scenarios")
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_SCENARIOS:
         raise SupervisorContractError("시나리오 개수는 1~3개여야 합니다.")
@@ -30,8 +109,7 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
     # 누락/null/빈 ID만 자동 부여하고, 명시 중복 또는 잘못된 형식은 조용히 변경하지 않는다.
     used_ids: set[str] = set()
     for item in items:
-        if not isinstance(item, dict):
-            raise SupervisorContractError("시나리오는 dict이어야 합니다.")
+        _only_fields(item, {"id", "label", "overrides", "assumptions"}, "scenario")
         sid = item.get("id")
         if sid is None or sid == "":
             continue
@@ -58,10 +136,13 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
         overrides = item.get("overrides", {})
         assumptions = item.get("assumptions", {})
         validate_overlay(overrides)
-        if not isinstance(assumptions, dict):
-            raise SupervisorContractError("assumptions는 dict이어야 합니다.")
+        _only_fields(assumptions, ASSUMPTION_PROPERTIES, "assumptions")
+        if "goal_mode" in assumptions and assumptions["goal_mode"] not in ("merge", "replace"):
+            raise SupervisorContractError("assumptions.goal_mode must be merge or replace")
+        if "notes" in assumptions and (not isinstance(assumptions["notes"], str) or not assumptions["notes"].strip()):
+            raise SupervisorContractError("assumptions.notes must be a nonempty string")
         horizon = assumptions.get("horizon_months")
-        if horizon is not None and (type(horizon) is not int or horizon < 1 or horizon > 600):
+        if "horizon_months" in assumptions and (type(horizon) is not int or horizon < 1 or horizon > 600):
             raise SupervisorContractError("분석 기간은 1~600개월이어야 합니다.")
         horizons.append(horizon)
         allocation = assumptions.get("allocation_pct")
@@ -75,47 +156,7 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
         else:
             allocations.append(None)
         actions = assumptions.get("holding_actions", [])
-        if not isinstance(actions, list):
-            raise SupervisorContractError("holding_actions는 list이어야 합니다.")
-        normalized_actions: list[dict[str, Any]] = []
-        seen_holdings: set[str] = set()
-        for a in actions:
-            if not isinstance(a, dict) or not isinstance(a.get("action"), str) or a["action"] not in _ALLOWED_ACTIONS:
-                raise SupervisorContractError("잘못된 보유상품 가상 행동입니다.")
-            action = a["action"]
-            ref = a.get("holding_ref")
-            if a.get("status") not in (None, "hypothetical", "planned"):
-                raise SupervisorContractError("가상 보유상품 행동을 실제 완료로 기록할 수 없습니다.")
-            if action in {"keep", "terminate"}:
-                if not isinstance(ref, str) or not ref.strip() or not baseline:
-                    raise SupervisorContractError("실제 계약 유지·해지는 baseline_ref와 holding_ref가 필요합니다.")
-                if ref in seen_holdings:
-                    raise SupervisorContractError("동일 보유상품에 중복 또는 상충하는 행동이 있습니다.")
-                seen_holdings.add(ref)
-            normalized = deepcopy(a)
-            if action == "subscribe":
-                # 신규 납입 전략은 기존 holding_actions의 target_criteria에 담는다.
-                # 사용자 실제 holdings, 소득, 생활비로 옮기지 않는다.
-                criteria = a.get("target_criteria", {})
-                if not isinstance(criteria, dict):
-                    raise SupervisorContractError("subscribe.target_criteria는 dict이어야 합니다.")
-                if ref is not None:
-                    raise SupervisorContractError("가상 신규 가입에는 실제 holding_ref를 부여하지 않습니다.")
-                if "monthly_contribution_krw" in criteria:
-                    amount = criteria["monthly_contribution_krw"]
-                    if type(amount) is not int or amount <= 0:
-                        raise SupervisorContractError("가상 월 납입액은 양의 정수 원화 금액이어야 합니다.")
-                if "term_months" in criteria:
-                    term = criteria["term_months"]
-                    if type(term) is not int or not 1 <= term <= 600:
-                        raise SupervisorContractError("가상 상품 기간은 1~600개월이어야 합니다.")
-                if "annual_rate_pct" in criteria:
-                    rate = criteria["annual_rate_pct"]
-                    if type(rate) not in (int, float) or not math.isfinite(rate):
-                        raise SupervisorContractError("가상 금리는 유한한 숫자여야 합니다.")
-                # 미래의 신규 가입을 실제 가입으로 표시하지 않는다.
-                normalized["status"] = "hypothetical"
-            normalized_actions.append(normalized)
+        normalized_actions = normalize_holding_actions(actions, baseline)
         normalized_assumptions = deepcopy(assumptions)
         if actions:
             normalized_assumptions["holding_actions"] = normalized_actions

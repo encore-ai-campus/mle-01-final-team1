@@ -90,7 +90,11 @@ class OpenAIDecider:
             raise SupervisorContractError("모델이 supervisor_decision을 정확히 한 번 반환하지 않았습니다.")
         try:
             parsed = DecisionSchema.model_validate_json(calls[0]["arguments"])
-        except (ValidationError, KeyError, TypeError, ValueError):
-            # 검증 오류가 원본 사용자 입력을 그대로 노출하지 않도록 한다.
+        except ValidationError as exc:
+            # 값 또는 전체 응답 대신 스키마상의 위치와 오류 종류만 전달한다.
+            errors = exc.errors(include_input=False, include_context=False, include_url=False)
+            locations = [".".join(str(part)[:48] for part in e["loc"])[:160] + ": " + e["type"] for e in errors[:5]]
+            raise SupervisorContractError("Decision 계약 오류: " + "; ".join(locations)) from None
+        except (KeyError, TypeError, ValueError):
             raise SupervisorContractError("모델의 구조화 판단 출력이 Decision 계약과 일치하지 않습니다.") from None
         return parsed.model_dump(exclude_none=True)

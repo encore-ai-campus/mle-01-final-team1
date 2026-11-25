@@ -1,13 +1,13 @@
-# Supervisor v17 개발 및 연동 가이드
+# Supervisor 개발 및 연동 가이드 (v25)
 
 > **작성일:** 2026-11-25 · **대상:** 청년 금융 멀티에이전트 서비스 개발자  
-> **기준 코드:** v16 패치 적용본; GitHub main 누적 기준 `4c0d5690eb22c839be1a2a47936897e11b439ef9` (PR #9, v15)  
-> **변경 요약:** v16 후보 예산·후속 분기 유지. 의도/정보 부족 판단 분리, 지정 필드 상태 계약, 질문 중복 및 참조 검증, 같은 turn 답변 연결 추가.  
+> **기준 코드:** GitHub main `0f7a9269341a112c350c51c51a5ffd8dbe806707` (v23 평가 반영본)  
+> **변경 요약:** v25 내부 노드 및 MainState 반환의 쓰기 허용 목록, 도구별 요청 스키마·반환 검증, 가상 시나리오 필드 계약, 읽기 전용 프로필 보충 경계. v24 반환 계약 수정 및 v23 평가 유지.  
 > **설계 기준:** State / Profile State v3.4, [Memory MVP 병합 커밋 `36974c8`](https://github.com/encore-ai-campus/mle-01-final-team1/commit/36974c86a781ec2ea87b94856fafc686ca44d6f3)
 
-**적용:** v17 증분 ZIP은 v16 적용본에, main 기준 누적 ZIP은 PR #9(v15) 또는 v16 적용본에 덮어쓴다. 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
+**적용:** v25 누적 ZIP을 위 main 또는 v23/v24 적용본의 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. v24를 별도로 적용할 필요 없다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 문서만 포함하며 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
 
-**평가 기능 개편(v23):** 기존 v22 평가 코드·데이터를 자연어 요구사항 중심으로 교체한다. 운영 Supervisor, 공용 State, 다른 전문 Agent, 기존 README는 변경하지 않는다. 평가 파일과 이 문서만 프로젝트 루트에 덮어쓴다.
+**평가(v23 유지):** 자연어 요구사항 중심의 기존 평가 코드·질문·채점 기준을 변경하지 않는다. v25는 v24 반환 계약 수정에 내부 State와 도구 경계 검증을 더한다.
 
 ## 1. 목적과 책임 범위
 
@@ -153,6 +153,7 @@ backend/agent/supervisor/
 ├── supervisor_test.py   # 실제 LLM 계획 평가
 ├── runtime.py
 ├── state.py
+├── state_policy.py      # 내부 노드/상위 반환 쓰기 허용 목록
 ├── clarification.py    # 질문 병합·답변 연결
 ├── candidate_budget.py  # 후보 예산 및 실행 경계 검증
 ├── contracts.py
@@ -191,6 +192,7 @@ backend/agent/supervisor/
 | `supervisor_main.py` | `Supervisor` 본체, 초기화, 노드 래핑, 호출 상한, 실행 추적, 최종 반환. 운영 진입점 `run()` |
 | `runtime.py` | CLI 질문 입력, JSON State 로드 및 새 turn 초기화, 로컬 서비스 연결, 실제 LLM 실행, 로그와 State 저장 |
 | `state.py` | 내부 `SupervisorWorkingState`, `ToolObservation`, 읽기 허용 필드 및 내부 초기화 |
+| `state_policy.py` | 노드별 내부 State 쓰기 범위, 다음 노드별 MainState 패치 허용 목록 및 읽기 전용 보충 경계 |
 | `contracts.py` | `Decision`, `ProfileRequest/Result`, `MemoryRequest`, `TaskDraft`, `SupervisorOutcome`, DAG 정규화·검증 |
 | `graph.py` | 내부 네 노드의 LangGraph 연결 및 부모 Graph용 `Command` 어댑터 |
 | `nodes/reason.py` | LLM 입력 View 생성, 구조화 판단 검증, 다음 노드 선택 |
@@ -202,7 +204,7 @@ backend/agent/supervisor/
 | `tools/advice.py` | 인증된 상담 스냅샷 선택 및 재분기 |
 | `nodes/finalize.py` | 최종 안전 검증, 추가 질문·승인 후보·완료 결과 검사, 검증 반려 및 반환 |
 | `llm/openai_api.py` | `OPENAI_API_KEY`, `OPENAI_MODEL`을 사용하는 Responses API HTTP 요청과 응답 검증 |
-| `llm/adapter.py` | Pydantic `DecisionSchema`, `TaskDraftSchema`, `PlanDraftSchema` 및 선택적 ChatModel 어댑터 |
+| `llm/adapter.py` | 구조화 Decision, 계획, 도구별 요청 및 질문 초안 스키마와 선택적 ChatModel 어댑터 |
 | `llm/prompts.py` | 전체 작업 계획, Agent 역할, 도구 사용, 실제/가상 정보 구분 등 LLM 판단 지침 |
 | `tools/integration.py` | 기존 Profile·Memory MVP 공개 API 연결, 인증 범위 바인딩, 기본 기억 검색 보완 |
 | `tools/ports.py` | `SupervisorPorts` 외부 서비스 주입 및 요청·응답 계약 정규화 |
@@ -247,12 +249,23 @@ Reason은 전체 사용자 프로필이나 전체 MainState를 그대로 전달�
 | 정보 구분 | 반영 위치 | 원칙 |
 |---|---|---|
 | 현재 실제값 | `basic_profile`, `financial_profile` | 신뢰된 프로필 스냅샷. 별도 인증된 읽기 Port가 제공한 값만 검증된 조회로 보완 가능 |
-| 이번 상담에서 제공된 실제값 | `intent.supplied_values` | 상담에만 반영, 자동 저장 금지 |
+| 이번 상담에서 제공된 실제 프로필 값 | `intent.supplied_values` | 허용된 평면 프로필 키만 사용, 상담에만 반영, 자동 저장 금지 |
+| 상담 목표 금액·상대 기간·제약 | `intent.purpose`, 관련 작업 `objective` | 프로필 저장 목표로 자동 변환하지 않음. 분기별 가정은 `assumptions` |
 | 가상 프로필 조건 | `scenario_state.scenarios[].overrides` | 실제 프로필과 격리 |
 | 가상 금융 행동 | `scenario_state.scenarios[].assumptions.holding_actions` | 납입액·가상 가입 등. 실제 거래 또는 저장 명령 아님 |
 | 명시적 저장 요청 | `basic_profile_changes`, `financial_profile_changes` | `needs_confirmation` 변경 후보만 생성, 실제 저장 서비스는 별도 |
 
 `scenario_state`는 경제적 가정 또는 금융 행동에 따라 독립 분석이 필요할 때 사용한다(단일 가정 1개, 비교 2~3개). 단순 상품 후보 비교·개념 설명·여러 목표 존재만으로 분기를 만들지 않는다. 계획 제출 시 `intent.purpose`, `operation`, `supplied_values`, `profile_update_status`를 필수화하며 비교 요청에는 `analysis_mode`를 명시한다. `strategy_compare` 또는 `compare`+`roadmap`으로 분류한 계획은 2~3개 분기를 요구한다. 이는 기존 공용 필드를 활용한 Supervisor의 실행 정책이다. 실제 계약 유지·해지 비교의 `holding_ref`는 인증된 동일 기준 스냅샷에서 검증되어야 하며 `product_ref`와 혼용하지 않는다.
+
+#### 상담 목표와 프로필 반환 계약 (v24)
+
+- `supplied_values`는 실제 사용자 진술 중 기존 프로필 계약에 해당하는 값만 담는다. 허용 키의 출처는 `tools/profile_fields.py`의 `SUPPLIED_FIELDS`이며, `llm/adapter.py`도 같은 목록으로 API용 JSON Schema를 생성한다. 조회용 `financial_profile.monthly_net_income_krw`와 반환용 `monthly_net_income_krw`는 구분한다.
+- 일반 상담에서 목표 금액·상대 기간은 `purpose`와 관련 작업 `objective`에 명시한다. 실제 저장 목표 또는 구조화된 목표 수정이 필요한 경우에만 `goals[]` 계약을 사용한다. 상대 기간을 임의의 ISO 날짜로 추정하지 않는다.
+- 이전 LLM 출력의 정확한 도메인 경로 키와 `target_amount_krw` / `horizon_months` 또는 `goal_target_amount_krw` / `goal_horizon_months`는 Supervisor 경계에서 제한적으로 정규화한다. 목표 수치는 상담 목적 및 계획의 공통 조건 문구로 옮긴다(분기 가정·상품 만기와 별개). 원본 프로필/저장 목표에는 반영하지 않는다. 알 수 없는 키, 충돌하는 별칭, 잘못된 값 및 모호한 구조화 목표/저장 요청은 반려한다. 오류에는 값 대신 잘못된 필드명과 수정 위치를 제공한다.
+- API는 기존 비엄격 함수 호출(`strict=False`)을 유지한다. 스키마는 모델을 안내하고, 최종 Python 검증이 안전 경계를 강제한다. 실패한 계획을 검증 없이 발행하거나 임의의 값으로 채우지 않는다.
+- `available`인 데이터가 하위 작업에만 필요하면 조회하지 않고 사용을 지시한다. 계획 자체에 꼭 필요한 미로딩 정보만 Profile inspect로 확인한다. 상품 자격·수수료 등 전문 Agent가 확인하거나 조건부로 평가할 수 있는 값은 불필요한 추가 질문을 만들지 않는다.
+
+예: “2년 안에 2천만 원을 모으고 싶다”는 실제 프로필의 금액 필드가 아니다. `intent.purpose`와 Fund의 `objective`에 목표와 기간을 명시하고, 실제 프로필에 새 정보가 없다면 `supplied_values: {}`로 제출한다. 이 수정으로 MainState/AgentInput 계약은 변경하지 않는다.
 
 ### 4.4 최종 반환
 
@@ -776,7 +789,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 `--regression`은 실제 모델의 판단 정답을 재생하는 테스트가 아니다. HTTP 전송 경계, DAG, 내부 State 격리, Memory 계약·권한·재사용과 실제 팀 MVP 연결을 검사한다. 기존 `--case`, `--all`, `--simulate-dispatch` 방식의 고정 테스트는 v12에서 제거되었다.
 
-v16의 37개 계약 검사에 v17 확인 질문/조회 상태/재개 검사 13개를 추가했다. 총 50개(47개 통과, 환경 의존 검사 3개 미실행). 기존 HTTP/분기/DAG/Memory/실제 계약 참조 검증을 유지하며 신규 검사는 분기 수별 슬롯, 다중/공통 작업 슬롯 차감, LLM 상한 무시 및 변조 거부, Dispatcher/Collector 숫자 전달·초과 반려, 후보 비교 분기 제한, B안 복원·재분기, 미확인 상담/계약 차단, 비중 검증, 이전 상한 변경 시 revision 갱신을 확인한다. 실제 API 또는 전문 Agent/상담 저장소의 운영 연결 검사는 포함하지 않는다.
+v16의 37개 계약 검사에 v17 확인 질문/조회 상태/재개 검사 13개, v24 반환 형식 검사 8개를 추가했다. v25에서는 State 쓰기·도구 계약 검사 9개를 추가하여 총 67개(64개 통과, 환경 의존 검사 3개 미실행). v24는 스키마 허용 목록, 실제 로그의 목표액/기간 오배치, 조회용 점 표기 키, 잘못된 상대 날짜, 오류 복구·저장 경계와 프로필 준비 없이 독립 분기 계획을 제출할 수 있는지 검사한다. 기존 HTTP/분기/DAG/Memory/실제 계약 참조 검증을 유지하며 신규 검사는 분기 수별 슬롯, 다중/공통 작업 슬롯 차감, LLM 상한 무시 및 변조 거부, Dispatcher/Collector 숫자 전달·초과 반려, 후보 비교 분기 제한, B안 복원·재분기, 미확인 상담/계약 차단, 비중 검증, 이전 상한 변경 시 revision 갱신을 확인한다. 실제 API 또는 전문 Agent/상담 저장소의 운영 연결 검사는 포함하지 않는다.
 
 실제 모델 평가에는 `--question`, 필요시 `--state-file`을 사용한다. 결과를 아래 기준으로 검토한다.
 
@@ -940,3 +953,55 @@ v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사�
 - 가상 프로필·읽기 포트·상담 스냅샷을 사용하며 전문 Agent의 실제 검색, 금융 계산, Evidence/Reflection, 최종 답변, 운영 DB와 상위 Dispatcher/Collector는 평가하지 않는다. E-01의 후속은 직전 반환 계획에 기반한 가상 스냅샷이며 이전 계획이 없으면 차단으로 기록한다.
 
 **개발 완료 기준:** Supervisor는 사용자 요청을 받아 실제 모델 판단으로 검증된 전체 작업 계획 또는 필수 추가 질문을 반환하고, 상위 그래프가 그 결과를 소비할 수 있어야 한다. 전문 Agent 실행·저장·최종 답변까지 Supervisor가 대신하는 방향으로 책임을 확장하지 않는다.
+
+### 9.6 v24 수정 검증 및 저비용 재실행
+
+2026-11-25 실제 v23 평가에서 T-01/G-03이 `supplied_values` 오류로 계획 반환에 실패했다. 첨부된 판단 출력을 그대로 오프라인 재생했을 때 v24 G-03은 두 번째 판단에서 `plan_validator`로 정상 반환(복구 0회), C-04는 기존 `ask_user` 정상 반환, T-01은 계약 오류 없이 `ask_user`로 반환했으나 계획 필수 사례이므로 평가상 실패다. 이는 새 모델 판단이나 실제 검색 결과가 아니다. 상대 날짜가 섞인 잘못된 `goals[]`는 추정하지 않고 구체적인 오류로 반려한다.
+
+```powershell
+# 프로젝트 루트, 가상환경 활성화 상태
+# 비용 없이 기존 및 신규 계약 검사
+python backend/agent/supervisor/supervisor_main.py --regression
+# 실제 API는 G-03 한 문항만 재검사
+python backend/agent/supervisor/supervisor_test.py --case G-03
+# G-03 정상 확인 후 전략 비교 판단 검사
+python backend/agent/supervisor/supervisor_test.py --case T-01
+```
+
+정량 지표와 결과 경로(`testing/results/`)는 v23과 동일하다. 실제 모델의 반환 안정성/토큰 절감 및 T-01 질문 감소 여부는 재실행으로 확인한다. 오프라인 검사는 실제 모델 평가를 대체하지 않으며 Profile prepare 개발 및 상위 전문 Agent 연동 범위도 변경하지 않는다.
+
+
+### 9.7 v25 내부 State 및 도구의 구조화 경계
+
+LLM은 사용자 의도, 전략, 필요한 작업과 도구를 결정한다. Python은 **어디에 무엇을 쓸 수 있는지** 검사한다. 기존 4개 내부 노드와 공용 MainState의 키는 그대로 유지한다. 새 `state_policy.py`는 노드 결과를 적용하기 전에 허용 필드 및 반환 형태를 검사하고, 각 노드에는 독립적인 State 복사본을 전달한다.
+
+| 내부 노드 | 허용된 내부 업데이트 |
+|---|---|
+| Reason | `decision`, `reason_calls`, `retry` |
+| Tools | `observations`, `tool_calls` |
+| Plan | `candidate_patch`, `candidate_error` |
+| Finalize | 성공 시 `main_patch`, `next_node`, `retry`, `done`; 복구 시 `issues`, `repair_count`, `retry`, `done`, `candidate_patch` |
+
+`source`는 초기화 이후 직접 변경하지 않는다. 모든 도구 결과는 내부 관찰을 거치며 도구가 MainState 패치를 반환하거나 DB에 저장하지 않는다. `finalize_patch()`는 반환 경로별로 다음 키만 허용한다.
+
+| 반환 경로 | 공통 `phase` 외 허용 범위 |
+|---|---|
+| `plan_validator` | `intent`, `execution_plan`, `scenario_state`, `memory` |
+| `ask_user` | `pending_input`, `intent`, `scenario_state`, `memory`, `basic_profile_changes`, `financial_profile_changes` |
+| `final_advice` | `intent`, `memory` |
+
+예외: 검증된 서버 조회 관찰로 **아직 로드되지 않은** `basic_profile` / `financial_profile` 필드만 보충한다. 해당 관찰은 읽기 전용 inspect, 요청 필드 일치, 상태(available/missing)와 실제 값의 일치가 필요하다. 기존 로드 값을 덮어쓸 수 없고 `version` 등 메타데이터를 LLM이 변경하지 못한다. 이 보충은 DB 저장이 아니다. `agent_results`, `review_results`, `final_advice`, `messages` 등 타 노드 소유 필드는 Supervisor 직접 쓰기 금지다.
+
+#### 도구 계약
+
+- Profile inspect: `operation=inspect`, `instruction`, `is_temporary=true`, 등록된 `fields[]` 필수. fields 없이 prepare로 우회할 수 없다. 읽기 응답에서 요청하지 않은 프로필 필드는 적재하지 않는다.
+- Profile prepare: `operation=prepare`, `instruction`, `is_temporary`만 LLM 입력에 노출한다. `current_profile`은 서버가 주입한다. 반환 변경 후보의 `change_id/domain/field/value` 및 선택 `remove_goal_ids`를 검사한다. applied 등 완료 상태를 허용하지 않는다. 임시 prepare의 실제 저장 후보는 반려한다. 실제 변경 후보는 기존 사용자 승인 대기 경로로만 전달한다.
+- Memory: 기존 `query`, `limit`, `memory_types` 계약 및 조회 결과 정규화를 유지한다. 인증 식별자는 서버가 바인딩한다.
+- Scenario: 등록된 `overrides`는 기존 프로필 가정 필드만 허용한다. `assumptions`의 허용 키는 `horizon_months`, `allocation_pct`, `holding_actions`, `goal_mode`, `notes`이다. `holding_actions`는 기존 `keep/terminate/subscribe`와 해당 조건 계약만 허용하며 실제 거래 명령은 아니다. 새로운 금융 가정은 `notes` 또는 해당 작업 `objective`로 전달한다. 새로운 구조화 필드가 필요하면 해당 계약과 검증기를 함께 확장한다.
+- 질문: `question/fields/target` 및 선택 `id/scenario_id/status=pending`만 허용하고 답변·해결 상태는 LLM 입력에서 제외한다.
+
+`assumptions`의 기존 임의 키를 계속 자동 통과시키지 않는 것은 의도적인 호환성 변경이다. 이미 저장된 시나리오에서 미등록 키가 발견되면 명시적인 재계획 또는 계약에 맞춘 변환이 필요하다. 실제 금리·자격·세금·재무 계산의 의미 검증은 전문 Agent와 Profile의 책임이며 이번 패치로 완료되는 것은 아니다.
+
+#### 검증
+
+오프라인 계약 검사 67개(64개 통과, 3개 환경 의존 검사 미실행) 및 평가기 검사 19개(19개 통과). 9개 신규 검사: 도구/질문 스키마, Decision 범위, inspect 우회 금지, 변경 후보 계약, 임시 변경 후보 금지, 가상 분기 허용 필드, 내부 노드 쓰기 범위, 상위 패치 및 조회 경계, 요청한 필드만 적재. 실제 API는 호출하지 않았다. 구조화 스키마는 이전보다 상세해져 호출당 입력이 늘 수 있으며 실제 토큰 절감은 재실행 측정이 필요하다. 검증 기능을 위해 새 LLM 호출이나 새 Graph 노드를 추가하지 않는다.
