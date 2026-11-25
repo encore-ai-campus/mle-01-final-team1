@@ -7,7 +7,7 @@
 
 **적용:** v17 증분 ZIP은 v16 적용본에, main 기준 누적 ZIP은 PR #9(v15) 또는 v16 적용본에 덮어쓴다. 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
 
-**평가 기능 추가:** GitHub main `414b24ab4c9908e3ce287c7d2fe44fcdfd4a3aab` 기준의 소규모 평가 패치는 운영 코드·기존 README를 변경하지 않는다. 평가 파일만 추가하고 이 문서의 9.5절에 사용법을 통합한다. 별도 평가 패치를 선행 적용할 필요 없이 프로젝트 루트에 압축을 푼다.
+**평가 기능 개편(v23):** 기존 v22 평가 코드·데이터를 자연어 요구사항 중심으로 교체한다. 운영 Supervisor, 공용 State, 다른 전문 Agent, 기존 README는 변경하지 않는다. 평가 파일과 이 문서만 프로젝트 루트에 덮어쓴다.
 
 ## 1. 목적과 책임 범위
 
@@ -212,7 +212,7 @@ backend/agent/supervisor/
 | `testing/test_contracts.py` | API 없이 수행하는 최소 스키마·HTTP·DAG·State·Memory 계약 검사 |
 | `supervisor_test.py` | 실제 모델의 계획 평가 CLI; 기본 3개 사례, 의미 채점 선택 |
 | `testing/eval_questions.json` | 사용자가 편집하는 평가 질문 및 가상 프로필 유형 |
-| `testing/eval_cases.json` | 기준 질문의 허용 경로·Agent·시나리오·의존성 및 의미 평가 기준 |
+| `testing/eval_cases.json` | 기준 질문의 허용 반환 경로·필수/허용 Agent·시나리오·요구사항·의미 평가 기준 |
 | `testing/evaluator.py` | 테스트용 프로필/상담 이력, 자동 계약 평가 및 결과 저장 |
 | `testing/semantic_judge.py` | 선택적 LLM 의미 평가 |
 | `testing/test_evaluator.py` | API 없이 평가기 자체를 검증 |
@@ -838,7 +838,19 @@ v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사�
 ]
 ```
 
-`profile`은 가상 프로필 종류(`complete`, `partial`, `empty`, `contract`, `debt`)이며, 필요시 `profile_override`로 조건을 지정한다. ID는 고유 대문자 문자열을 사용한다. 채점 기준은 `backend/agent/supervisor/testing/eval_cases.json`에 분리되어 있다. 질문·프로필·override가 기준과 일치할 때만 `reference` 모드로 사례별 정답 기준을 적용한다. 수정/신규 질문은 `general` 모드로 일반 계약 검사 및 선택적 의미 평가만 한다. 기준을 함께 추가하고 싶다면 기준 파일에 같은 질문·프로필과 허용 경로(`routes`), `review`, 필요시 `required_agents`, `allowed_agents`, `branch_count`, `dependencies`, `task_chains`를 정의한다. 채점 기준은 Supervisor LLM의 입력으로 전달하지 않는다.
+`profile`은 가상 프로필 종류(`complete`, `partial`, `empty`, `contract`, `debt`)이며, 필요시 `profile_override`로 조건을 지정한다. ID는 고유 대문자 문자열을 사용한다. 채점 기준은 `backend/agent/supervisor/testing/eval_cases.json`에 분리되어 있다. 질문·프로필·override가 기준과 일치할 때만 `reference` 모드로 사례별 정답 기준을 적용한다. 수정/신규 질문은 `general` 모드로 일반 계약 검사 및 선택적 의미 평가만 한다. 기준을 함께 추가하고 싶다면 기준 파일에 같은 질문·프로필과 허용 반환 경로(`routes`), `review`, 필요시 `required_agents`, `allowed_agents`, `branch_count`, `requirements`를 정의한다. 자연스러운 기준 질문은 `dependencies`나 `task_chains`로 정확한 순서를 고정하지 않는다. 명시적인 실행 순서 검증은 별도 오프라인 계약 검사 또는 사용자 정의 테스트에서만 사용한다. 채점 기준은 Supervisor LLM의 입력으로 전달하지 않는다.
+
+`requirements`는 요구사항별 고유 ID와 설명을 담는다. 선택 `evidence`는 반환 내용의 문구/수치 존재를 정규식으로 검사한다. `scope`는 `plan`(반환 intent의 목적·일회성 값, 작업 목적, scenario_state) 또는 `clarification`(반환된 미해결 질문 문구)이다. 원 질문이나 가상 프로필만으로는 일치 판정을 하지 않는다. 매칭 전에 유니코드 NFKC 정규화, 공백 제거 및 숫자 사이 쉼표 제거를 실시하므로 `any_of`는 정규화된 표현에 맞춘다. 선택 `routes`를 두면 해당 반환 경로에서만 요구사항을 평가한다. 예: 계획 제출 또는 필수 확인 질문을 모두 허용하는 T-03/B-06에서는 실제 계획 요구사항과 확인 질문 요구사항을 따로 정의한다. 표현 검사 없는 요구사항은 선택적 의미 평가 대상으로 남긴다.
+
+```json
+{
+  "id": "target_amount",
+  "description": "2천만 원 목표 보존",
+  "evidence": {"scope": "plan", "any_of": ["20000000", "2천만", "2000만"]}
+}
+```
+
+`evidence` 검사는 표현 일치 여부의 참고 지표다. 의미상 조건을 정확히 반영했는지, 해당 수치를 모든 분기에 알맞게 전달했는지까지 보장하지 않는다. 단순 문구 일치는 자동 전체 통과 여부나 의미 점수에 합산하지 않는다.
 
 #### 9.5.2 소규모 질문 목록
 
@@ -846,15 +858,15 @@ v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사�
 |---|---|---:|
 | T-01 | 복합 재무 전략·목표·독립 분기 | 1 |
 | C-04 | 이전 상품 참조가 없을 때 확인 질문 | 1 |
-| G-03 | Fund → Product → Fund 재계산 | 1 |
+| G-03 | 2년/2천만 원 목표 달성 가능성과 적합 적금 탐색 | 1 |
 | T-03 | 기존 적금 유지·갈아타기 | 1 |
-| B-06 | Product + Policy → Fund 협업 | 1 |
+| B-06 | 독립 비용·대출·청년 혜택·저축 여력 협업 | 1 |
 | E-01 | 3개 전략 비교 → 선택안만 상품 3개 검색 | 2 |
 | F-02 | 단순 계산, 검색 불필요 | 1 |
 | G-01 | 상품 추천 없는 재무설계 | 1 |
-| G-02 | Fund → Product 선행 재무설계 | 1 |
+| G-02 | 부담 없는 저축액과 적합 적금 후보 | 1 |
 
-기본 3개 사례/3턴, 전체 9개 사례/10턴. E-01은 첫 질문에 세 가지 전략 비교를 명시하여 다음 턴의 세 번째 선택이 성립하도록 했다. T-01/T-03은 청년 적금이라는 표현만으로 Policy 검색을 필수 배정하지 않는다. 실제 별도 정책 조사 필요 여부와 결과 반영은 의미 평가에서 확인한다. 모든 경로는 평가 기준이며 운영 시 실제 Supervisor가 계획을 정한다.
+기본 3개 사례/3턴, 전체 9개 사례/10턴. E-01은 첫 질문에 세 가지 전략 비교를 명시하여 다음 턴의 세 번째 선택이 성립하도록 했다. T-01/T-03은 청년 적금이라는 표현만으로 Policy 검색을 필수 배정하지 않는다. 실제 별도 정책 조사 필요 여부와 결과 반영은 의미 평가에서 확인한다. G-02/G-03은 순차(양방향), 병렬, 필요시 재계산 등 복수의 유효한 DAG를 구조적으로 허용한다. T-01은 세후 소득을 명시하고 기존 대출 금리·상환액이 조회 가능한 가상 프로필을 제공하여 계획 제출 능력을 평가한다. 미확인 조건은 조건부 처리할 수 있다는 평가 기준이며, 일반 운영에서 무조건 계획을 제출하라는 규칙은 아니다. C-04는 상품 특정이 불가능한 질문 반환을 별도로 평가한다.
 
 #### 9.5.3 실행 (프로젝트 루트, PowerShell)
 
@@ -886,7 +898,7 @@ v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사�
 
 #### 9.5.4 결과 읽기
 
-`backend/agent/supervisor/testing/results/<실행시각>/`에 `summary.json`(전체 지표), `results.json`(질문별 상세 계획 및 trace), `summary.csv`, `semantic_review_template.csv`가 생성된다. 실행 디렉터리와 무관하게 같은 위치에 저장하며, 실행별 시간 폴더로 이전 결과를 보존한다. 완료 시 두 JSON의 절대 경로를 콘솔에 출력한다. `--output`으로 저장 디렉터리를 변경할 수 있다(새 디렉터리 또는 빈 디렉터리). 생성된 기본 결과 폴더는 `testing/.gitignore`에서 제외하며, JSON과 CSV의 내용 및 기존 평가 방식은 유지한다. `--list`, `--self-test` 실행에서는 실제 평가 결과 폴더를 만들지 않는다. 기본 자동 평가는 Python으로 처리한다. 결과에는 실제 API 입력/출력 토큰, 호출 횟수, 시간, 실패 항목, 계획 및 trace가 기록된다. 채점용 LLM 토큰은 별도로 집계한다.
+`backend/agent/supervisor/testing/results/<실행시각>/`에 `summary.json`(전체 지표), `results.json`(질문별 상세 계획 및 trace), `summary.csv`, `semantic_review_template.csv`가 생성된다. 실행 디렉터리와 무관하게 같은 위치에 저장하며, 실행별 시간 폴더로 이전 결과를 보존한다. 완료 시 두 JSON의 절대 경로를 콘솔에 출력한다. `--output`으로 저장 디렉터리를 변경할 수 있다(새 디렉터리 또는 빈 디렉터리). 생성된 기본 결과 폴더는 `testing/.gitignore`에서 제외하며, JSON 및 CSV에 요구사항별 검사, 계획 성공률, 최초 반환 계약 통과율을 추가한다. 기존 지표도 유지한다. `--list`, `--self-test` 실행에서는 실제 평가 결과 폴더를 만들지 않는다. 기본 자동 평가는 Python으로 처리한다. 결과에는 실제 API 입력/출력 토큰, 호출 횟수, 시간, 실패 항목, 계획 및 trace가 기록된다. 채점용 LLM 토큰은 별도로 집계한다.
 
 | 자동 평가 | 의미 |
 |---|---|
@@ -901,11 +913,28 @@ v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사�
 
 `strict_pass_pct_planned`는 모든 자동 검사를 통과한 턴 수/전체 예정 턴 수 × 100이다. 오류·차단·미실행을 분모에서 제외하지 않는다. `required_agent_recall_pct`, `allowed_agent_precision_pct`는 기대 기준이 있는 계획의 Agent 유형 단위 지표이며 상품 추천 정확도가 아니다. 편집·신규 질문의 일반 계약 통과율은 의미적 정답률이 아니다. 기준 없는 질문과 기준 있는 질문은 `criteria_groups`로 구분한다.
 
-의미 평가(선택)는 의도 이해 25, 프로필/추가 질문 20, 실행 계획·Agent 배정 25, 조건 및 맥락 보존 20, 효율성 10으로 총 100점이다. 각 항목을 0/1/2로 채점하고 배점에 비례 환산한다. 기본은 미채점이며, 수동 검토 CSV 또는 `--judge`를 사용한다. 실제 질문에서 `ask_user`가 허용되어도 정말 필수 질문이었는지는 사람이 판단할 필요가 있다.
+다음 추가 지표는 기존 구조 점수 및 의미 점수와 별개로 기록한다.
+
+| 추가 지표 (`summary.json`) | 정의 |
+|---|---|
+| `plan_generation_success_pct_planned` | 계획 필수 턴 중 유효한 계획을 반환하고 자동 기준을 통과한 턴 비율. 오류·차단·미실행 포함 분모. |
+| `clarification_required_success_pct_planned` | 확인 질문 필수 턴 중 정상 확인 질문과 자동 기준 통과 비율. |
+| `plan_required_but_asked_count` | 계획 필수 턴에서 확인 질문을 반환한 횟수. |
+| `first_pass_return_pct_attempted` | 시도된 턴 중 계약 오류 복구 없이 정상 반환한 턴 비율. 정상 도구 호출은 복구로 세지 않으며, 반환 경로의 적절성과는 별개다. |
+| `repair_rate_pct_attempted` | 시도된 턴 중 계약 복구가 발생한 턴 비율. |
+| `agent_selection_harmonic_pct` | 평가 가능한 반환 계획의 필수 Agent 재현율과 허용 Agent 정밀도의 조화 평균. 선택적 Agent를 허용하므로 일반적 정답 집합 F1과 구별한다. |
+| `requirement_evidence_match_pct` | 적용 가능한 표현 검사 항목 중 일치 항목 비율. 검사 항목 수와 일치 수를 함께 기록한다. 정확한 의미나 실제 금융 결과의 정답률이 아니다. |
+| `semantic_requirement_coverage_mean_pct` | 선택적 의미 채점을 받은 턴들의 요구사항 충족률 평균. 각 턴의 요구사항을 0/1/2로 평가하고 100점 만점으로 환산. 미채점이면 null. |
+| `tokens_per_attempted_turn` / `tokens_per_successful_required_plan` | 시도된 턴당 평균 Supervisor 토큰, 또는 계획 필수 턴에 소모한 총 토큰(실패 포함)을 정상 계획 수로 나눈 값. 사용량 누락 또는 성공 계획 0개이면 해당 지표 null. |
+| `state_integrity_pct_executed` | 반환된 턴에서 원본 프로필/State/승인/저장 제한 검사 모두 통과한 비율. |
+
+`results.json`의 `requirement_evidence.items`에는 `matched`, `not_matched`, `semantic_review`, `not_applicable`을 구분하여 기록한다. 실패한 계획 초안이 남은 경우 `rejected_draft_evidence`는 진단용으로만 보존하며 성공 계획·표현 일치율에 합산하지 않는다. `semantic.requirements`에는 선택적 의미 채점의 항목별 점수와 근거가 기록된다. 자동 지표의 분모가 없으면 null로 표시하며, 실패/미실행 여부와 실제 평가 범위를 함께 확인한다. `evaluation_version`으로 기존 평가와 버전을 구분한다. 변경된 질문·기준의 결과를 이전 데이터와 그대로 비교하지 않는다.
+
+의미 평가(선택)는 기존 의도 이해 25, 프로필/추가 질문 20, 실행 계획·Agent 배정 25, 조건 및 맥락 보존 20, 효율성 10으로 총 100점이다. 각 항목을 0/1/2로 채점하고 배점에 비례 환산한다. 기본은 미채점이며, 수동 검토 CSV 또는 `--judge`를 사용한다. 추가된 요구사항별 점수도 같은 채점 호출에서 받으므로 호출 횟수는 증가하지 않지만 채점 출력 토큰은 증가할 수 있다. 실제 질문에서 `ask_user`가 허용되어도 정말 필수 질문이었는지는 사람이 판단할 필요가 있다.
 
 #### 9.5.5 검증 범위
 
-- 평가기 단위 검사 17개: 기본/전체/연속 상담 목록, 호출 상한, 실제 API 미호출 목록 조회, 편집용 파일 위치, 판단 결과 및 채점 계약 등을 확인한다. `--self-test`는 고정 평가 기준을 사용하므로 질문 편집에 따라 기존 정답 기준이 바뀌지 않는다.
+- 평가기 단위 검사 19개: 기본/전체/연속 상담 목록, 호출 상한, 실제 API 미호출 목록 조회, 편집용 파일 위치, 판단 결과 및 채점 계약 등을 확인한다. `--self-test`는 고정 평가 기준을 사용하므로 질문 편집에 따라 기존 정답 기준이 바뀌지 않는다.
 - 기존 Supervisor 회귀 검사는 `supervisor_main.py --regression`으로 별도 실행한다. 의존성에 따라 LangGraph 및 팀 Profile·Memory 연동 검사가 생략될 수 있다.
 - 실제 API 성능 점수와 실측 토큰은 사용자 환경의 실행 결과로 확인한다.
 - 가상 프로필·읽기 포트·상담 스냅샷을 사용하며 전문 Agent의 실제 검색, 금융 계산, Evidence/Reflection, 최종 답변, 운영 DB와 상위 Dispatcher/Collector는 평가하지 않는다. E-01의 후속은 직전 반환 계획에 기반한 가상 스냅샷이며 이전 계획이 없으면 차단으로 기록한다.

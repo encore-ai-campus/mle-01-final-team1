@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import time
+import unicodedata
 from collections import Counter
 from copy import deepcopy
 from datetime import date
@@ -29,6 +31,77 @@ ROUTES = {'plan_validator', 'ask_user', 'final_advice'}
 DIMENSIONS = {'intent': 25, 'profile_and_clarification': 20, 'assignment': 25,
               'constraints_and_context': 20, 'efficiency': 10}
 USAGE_KEYS = ('input_tokens', 'output_tokens', 'total_tokens', 'cached_input_tokens', 'reasoning_tokens')
+EVAL_VERSION = 'v23_requirement_coverage'
+EVIDENCE_SCOPES = {'plan', 'clarification'}
+
+
+def validate_requirements(items: Any) -> None:
+    if not isinstance(items, list):
+        raise ValueError('requirements 배열이 필요합니다.')
+    ids = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) - {'id', 'description', 'evidence', 'routes'}
+                or not isinstance(item.get('id'), str) or not re.fullmatch(r'[a-z][a-z0-9_]*', item['id'])
+                or item['id'] in ids or not isinstance(item.get('description'), str) or not item['description'].strip()):
+            raise ValueError('요구사항 ID/설명 형식 오류 또는 중복')
+        ids.add(item['id'])
+        if 'routes' in item and (not isinstance(item['routes'], list) or not item['routes'] or not set(item['routes']) <= ROUTES):
+            raise ValueError('요구사항 적용 경로 오류')
+        if 'evidence' not in item:
+            continue
+        evidence = item['evidence']
+        if (not isinstance(evidence, dict) or set(evidence) != {'scope', 'any_of'}
+                or evidence['scope'] not in EVIDENCE_SCOPES or not isinstance(evidence['any_of'], list)
+                or not evidence['any_of'] or any(not isinstance(p, str) or not p.strip() for p in evidence['any_of'])):
+            raise ValueError('요구사항 evidence 형식 오류')
+        for pattern in evidence['any_of']:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f'요구사항 정규식 오류: {item["id"]}') from exc
+
+
+def evidence_checks(turn: dict[str, Any], patch: dict[str, Any], route: str) -> dict[str, Any]:
+    """반환된 계획/질문의 수치·문구 존재만 검사한다. 원래 질문, 가상 프로필,
+    평가 기준은 검색 대상에 포함하지 않으며 의미상의 충족을 단정하지 않는다."""
+    plan = patch.get('execution_plan')
+    plan = plan if isinstance(plan, dict) else {}
+    intent = patch.get('intent')
+    intent = intent if isinstance(intent, dict) else {}
+    tasks = plan.get('tasks')
+    tasks = tasks if isinstance(tasks, list) else []
+    pending = patch.get('pending_input')
+    pending = pending if isinstance(pending, list) else []
+    texts = {
+        'plan': json.dumps({'purpose': intent.get('purpose'), 'supplied_values': intent.get('supplied_values'),
+                            'tasks': [{'objective': t.get('objective')} for t in tasks if isinstance(t, dict)],
+                            'scenario_state': patch.get('scenario_state')}, ensure_ascii=False, separators=(',', ':')),
+        'clarification': json.dumps([q.get('question') for q in pending
+                                     if isinstance(q, dict) and q.get('status') == 'pending'], ensure_ascii=False, separators=(',', ':')),
+    }
+    scope_for_route = {'plan_validator': 'plan', 'ask_user': 'clarification'}.get(route)
+    records = []
+    for req in turn.get('requirements', []):
+        row = {'id': req['id'], 'description': req['description']}
+        evidence = req.get('evidence')
+        if route not in req.get('routes', ROUTES):
+            row['status'] = 'not_applicable'
+        elif not evidence:
+            row['status'] = 'semantic_review'
+        elif evidence['scope'] != scope_for_route:
+            row['status'] = 'not_applicable'
+        else:
+            # Strip whitespace and grouping commas, not decimal points or units.
+            normalized = re.sub(r'(?<=\d),(?=\d)|\s+', '', unicodedata.normalize('NFKC', texts[evidence['scope']]))
+            match = next((m for pattern in evidence['any_of'] if (m := re.search(pattern, normalized))), None)
+            row.update(status='matched' if match else 'not_matched', match=match.group() if match else None,
+                       scope=evidence['scope'])
+        records.append(row)
+    evaluated = [r for r in records if r['status'] in {'matched', 'not_matched'}]
+    matched = sum(r['status'] == 'matched' for r in evaluated)
+    return {'items': records, 'matched': matched, 'evaluated': len(evaluated),
+            'match_pct': round(100 * matched / len(evaluated), 2) if evaluated else None}
+
 
 
 def load_cases(path: Path = CASES_PATH) -> list[dict[str, Any]]:
@@ -58,6 +131,7 @@ def load_cases(path: Path = CASES_PATH) -> list[dict[str, Any]]:
             for chain in turn.get('task_chains', []):
                 if not isinstance(chain, list) or len(chain) < 2 or not set(chain) <= AGENTS:
                     raise ValueError(f'잘못된 작업 경로: {cid}')
+            validate_requirements(turn.get('requirements', []))
             if not turn.get('review'):
                 raise ValueError(f'의미 평가 기준 누락: {cid}')
     return cases
@@ -365,7 +439,8 @@ def evaluate(turn: dict[str, Any], source: dict[str, Any], original: dict[str, A
             'structural_score':round(100*passed/len(checks),2),'route':route,'agents':sorted(agents),'scenario_count':n,
             'candidate_limits':{a:sum(t.get('candidate_limit',0) for t in tasks if t['agent']==a) for a in ('product','policy')},
             'tasks':len(tasks),'waves':waves,'agent_counts':counts,
-            'objective_chars':sum(len(t.get('objective','')) for t in tasks)}
+            'objective_chars':sum(len(t.get('objective','')) for t in tasks),
+            'requirement_evidence':evidence_checks(turn, patch, route)}
 
 
 def run_case(case: dict[str, Any], decider: Any, *, repetition: int=1, use_graph: bool=True,
@@ -380,7 +455,11 @@ def run_case(case: dict[str, Any], decider: Any, *, repetition: int=1, use_graph
     for index,turn in enumerate(case['turns'],1):
         record={'case_id':case['id'],'turn':index,'repeat':repetition,'question':turn['question'],
                 'fixture_profile':profile_override or case['profile'],'review_focus':turn['review'],
-                'criteria_mode':case.get('criteria_mode','reference')}
+                'criteria_mode':case.get('criteria_mode','reference'),
+                'expected_routes':list(turn['routes']),
+                'plan_required':set(turn['routes'])=={'plan_validator'},
+                'clarification_required':set(turn['routes'])=={'ask_user'},
+                'requirements':deepcopy(turn.get('requirements',[]))}
         if blocked:
             record.update(status='blocked',error=blocked)
         else:
@@ -417,6 +496,14 @@ def run_case(case: dict[str, Any], decider: Any, *, repetition: int=1, use_graph
                           repair_count=sum(e.get('node')=='finalize' and bool(e.get('output',{}).get('retry')) for e in trace),
                           profile_reads=deepcopy(services.reads),memory_calls=len(services.memory_queries),snapshot_reads=deepcopy(services.snapshot_reads),
                           profile_prepare=services.prepare_mode,trace=trace)
+            # Count accepted returns separately from semantic quality. A legitimate tool round trip
+            # is not a repair. Failed calls/contract errors cannot count as first-pass returns.
+            record['first_pass_return'] = record['status']=='executed' and record['repair_count']==0
+            if record['status']=='error':
+                draft=next((e.get('output',{}).get('decision') for e in reversed(trace)
+                            if e.get('node')=='reason' and (e.get('output',{}).get('decision') or {}).get('kind')=='submit_plan'),None)
+                if draft:
+                    record['rejected_draft_evidence']=evidence_checks(turn,draft,'plan_validator')
         records.append(record)
         if emit: emit(record)
     return records
@@ -452,7 +539,42 @@ def summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             ok = sum(r['status']=='executed' and r.get('structural_pass',False) for r in group)
             criteria_groups[mode] = {'recorded':len(group),'executed':sum(r['status']=='executed' for r in group),
                                      'strict_pass_count':ok,'strict_pass_pct':rate(ok,len(group))}
-    return {'criteria_groups':criteria_groups,'scheduled_records':len(records),'executed':len(executed),'errors':sum(r['status']=='error' for r in records),'blocked':sum(r['status']=='blocked' for r in records),
+    plan_required=[r for r in records if r.get('plan_required')]
+    plan_success=[r for r in plan_required if r.get('route')=='plan_validator' and r.get('structural_pass')]
+    clarify_required=[r for r in records if r.get('clarification_required')]
+    clarify_success=[r for r in clarify_required if r.get('route')=='ask_user' and r.get('structural_pass')]
+    reference=[r for r in records if r.get('criteria_mode','reference')=='reference']
+    evidence=[r.get('requirement_evidence',{}) for r in executed]
+    evidence_matched=sum(e.get('matched',0) for e in evidence)
+    evidence_evaluated=sum(e.get('evaluated',0) for e in evidence)
+    # Accepted plan and ask_user have separate denominators; an ask is not a generated plan.
+    valid_plan_count=sum(r.get('route')=='plan_validator' and r.get('structural_pass') for r in executed)
+    first_pass_count=sum(r.get('first_pass_return',False) for r in attempted)
+    precision=rate(agent_counts['allowed_hits'],agent_counts['assigned_total'])
+    recall=rate(agent_counts['required_hits'],agent_counts['required_total'])
+    plan_usage=[r.get('usage',{}).get('total_tokens') for r in plan_required if r.get('status')!='blocked']
+    state_checks={'input_unchanged','profile_read_only','approval_boundary','hypothetical_no_save'}
+    state_pass=sum(all(c['passed'] for c in r['checks'] if c['name'] in state_checks) for r in executed)
+    requirement_scores=[s['requirement_coverage_pct'] for s in semantic if s.get('requirement_coverage_pct') is not None]
+    return {'evaluation_version':EVAL_VERSION,
+            'plan_required_turns_recorded':len(plan_required),'plan_required_success_count':len(plan_success),
+            'plan_generation_success_pct_recorded':rate(len(plan_success),len(plan_required)),
+            'valid_plan_count':valid_plan_count,
+            'clarification_required_turns_recorded':len(clarify_required),'clarification_required_success_count':len(clarify_success),
+            'clarification_required_success_pct_recorded':rate(len(clarify_success),len(clarify_required)),
+            'plan_required_but_asked_count':sum(r.get('route')=='ask_user' for r in plan_required),
+            'routing_accuracy_pct_recorded':rate(sum(any(c['name']=='route' and c['passed'] for c in r.get('checks',[])) for r in reference),len(reference)),
+            'first_pass_return_count':first_pass_count,'first_pass_return_pct_attempted':rate(first_pass_count,len(attempted)),
+            'repair_rate_pct_attempted':rate(sum(r.get('repair_count',0)>0 for r in attempted),len(attempted)),
+            'state_integrity_pct_executed':rate(state_pass,len(executed)),
+            'agent_selection_harmonic_pct':round(2*precision*recall/(precision+recall),2) if precision is not None and recall is not None and precision+recall else (0.0 if precision==recall==0 else None),
+            'requirement_evidence_matched':evidence_matched,'requirement_evidence_evaluated':evidence_evaluated,
+            'requirement_evidence_match_pct':rate(evidence_matched,evidence_evaluated),
+            'semantic_requirement_scored_turns':len(requirement_scores),
+            'semantic_requirement_coverage_mean_pct':round(mean(requirement_scores),2) if requirement_scores else None,
+            'tokens_per_attempted_turn':round(complete_usage['total_tokens']/len(attempted),2) if attempted and complete_usage['total_tokens'] is not None else None,
+            'tokens_per_successful_required_plan':round(sum(plan_usage)/len(plan_success),2) if len(plan_success) and plan_usage and all(x is not None for x in plan_usage) else None,
+            'criteria_groups':criteria_groups,'scheduled_records':len(records),'executed':len(executed),'errors':sum(r['status']=='error' for r in records),'blocked':sum(r['status']=='blocked' for r in records),
             'strict_pass_count':pass_count,'strict_pass_pct_all_records':rate(pass_count,len(records)),
             'strict_pass_pct_executed':rate(pass_count,len(executed)),
             'mean_structural_score_executed':round(mean(r['structural_score'] for r in executed),2) if executed else None,
@@ -475,22 +597,31 @@ def write_reports(output: Path, records: list[dict[str, Any]], metadata: dict[st
     totals['planned_turns']=planned
     totals['strict_pass_pct_planned']=round(100*totals['strict_pass_count']/planned,2) if planned else None
     totals['execution_coverage_pct']=round(100*totals['executed']/planned,2) if planned else None
+    planned_plans=metadata.get('planned_required_plan_turns',totals['plan_required_turns_recorded'])
+    planned_clarifications=metadata.get('planned_required_clarification_turns',totals['clarification_required_turns_recorded'])
+    totals['planned_required_plan_turns']=planned_plans
+    totals['planned_required_clarification_turns']=planned_clarifications
+    totals['plan_generation_success_pct_planned']=round(100*totals['plan_required_success_count']/planned_plans,2) if planned_plans else None
+    totals['clarification_required_success_pct_planned']=round(100*totals['clarification_required_success_count']/planned_clarifications,2) if planned_clarifications else None
     for name,data in [('results.json',{'metadata':metadata,'records':records}),('summary.json',{'metadata':metadata,**totals})]:
         target=output/name; temp=target.with_suffix('.tmp'); temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(target)
     with (output/'summary.csv').open('w',encoding='utf-8-sig',newline='') as f:
-        cols=['case_id','turn','repeat','criteria_mode','status','route','structural_score','structural_pass','agents','scenario_count','tasks','product_limit','policy_limit','llm_calls','input_tokens','output_tokens','total_tokens','repair_count','elapsed_seconds','semantic_score','failed_checks','error']
+        cols=['case_id','turn','repeat','criteria_mode','status','route','structural_score','structural_pass','agents','scenario_count','tasks','product_limit','policy_limit','llm_calls','input_tokens','output_tokens','total_tokens','repair_count','elapsed_seconds','semantic_score','requirement_evidence_match_pct','semantic_requirement_coverage_pct','first_pass_return','failed_checks','error']
         writer=csv.DictWriter(f,fieldnames=cols); writer.writeheader()
         for r in records:
-            writer.writerow({**{k:r.get(k,'') for k in cols if k not in {'agents','product_limit','policy_limit','input_tokens','output_tokens','total_tokens','semantic_score','failed_checks'}},
+            writer.writerow({**{k:r.get(k,'') for k in cols if k not in {'agents','product_limit','policy_limit','input_tokens','output_tokens','total_tokens','semantic_score','requirement_evidence_match_pct','semantic_requirement_coverage_pct','failed_checks'}},
                              'agents':','.join(r.get('agents',[])),'product_limit':r.get('candidate_limits',{}).get('product',''),'policy_limit':r.get('candidate_limits',{}).get('policy',''),
                              **{k:r.get('usage',{}).get(k) for k in ('input_tokens','output_tokens','total_tokens')},'semantic_score':r.get('semantic',{}).get('score',''),
+                             'requirement_evidence_match_pct':r.get('requirement_evidence',{}).get('match_pct'),
+                             'semantic_requirement_coverage_pct':r.get('semantic',{}).get('requirement_coverage_pct'),
                              'failed_checks':','.join(c['name'] for c in r.get('checks',[]) if not c['passed'])})
     # Manual review is never pre-filled with fabricated quality scores.
     # While running this generated template grows with the completed turns; edit after the run.
     review_path=output/'semantic_review_template.csv'
     with review_path.open('w',encoding='utf-8-sig',newline='') as f:
-        cols=['case_id','turn','repeat','criteria_mode','question','review_focus',*DIMENSIONS,'notes']
+        cols=['case_id','turn','repeat','criteria_mode','question','review_focus','requirement_checklist',*DIMENSIONS,'notes']
         writer=csv.DictWriter(f,fieldnames=cols); writer.writeheader()
         for r in records:
-            if r['status']=='executed': writer.writerow({k:r.get(k,'') for k in cols if k not in DIMENSIONS})
+            if r['status']=='executed': writer.writerow({**{k:r.get(k,'') for k in cols if k not in DIMENSIONS},
+                'requirement_checklist': '; '.join(f'{x["id"]}: {x["description"]}' for x in r.get('requirements',[]))})
     return totals

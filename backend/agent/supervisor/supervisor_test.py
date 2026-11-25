@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm.openai_api import OpenAIDecider
-from .testing.evaluator import CASES_PATH, QUESTIONS_PATH, load_cases, load_questions, run_case, write_reports
+from .testing.evaluator import CASES_PATH, QUESTIONS_PATH, EVAL_VERSION, load_cases, load_questions, run_case, write_reports
 
 
 QUICK_CASE_COUNT = 3
@@ -102,12 +102,14 @@ def main(argv: list[str] | None=None) -> int:
     except (ValueError,ModuleNotFoundError) as exc:
         print(f'실제 API 설정 실패: {exc}',file=sys.stderr)
         return 2
-    metadata={'model':decider.model,'execution_mode':'node_sequence_real_llm' if args.without_graph else 'langgraph_supervisor_real_llm',
+    metadata={'evaluation_version':EVAL_VERSION,'model':decider.model,'execution_mode':'node_sequence_real_llm' if args.without_graph else 'langgraph_supervisor_real_llm',
               'profile_read':'synthetic_read_only_fixture','profile_prepare':'project_module_if_available_opt_in' if args.with_profile_prepare else 'unconnected_by_default','memory':'synthetic_empty_fixture',
               'followup':'synthetic_advice_snapshot_from_prior_plan_or_candidate_fixture','specialist_execution':False,
               'judge_model':judge.model if judge else None,'case_ids':[c['id'] for c in selected],
               'cases_file':str(args.cases_file or args.questions_file),'reference_file':str(CASES_PATH) if not args.cases_file else None,
-              'general_turns_planned':general_count,'planned_turns':planned_turns,'repeat':args.repeat,'max_reason_calls':args.max_reason_calls,
+              'general_turns_planned':general_count,'planned_turns':planned_turns,
+              'planned_required_plan_turns':sum(set(t['routes'])=={'plan_validator'} for c in selected for t in c['turns'])*args.repeat,
+              'planned_required_clarification_turns':sum(set(t['routes'])=={'ask_user'} for c in selected for t in c['turns'])*args.repeat,'repeat':args.repeat,'max_reason_calls':args.max_reason_calls,
               'supervisor_call_ceiling':planned_turns * args.max_reason_calls,'judge_call_ceiling':planned_turns if judge else 0,
               'started_at':datetime.now().astimezone().isoformat()}
     records:list[dict[str,Any]]=[]
@@ -149,6 +151,8 @@ def main(argv: list[str] | None=None) -> int:
     print(f'\n실행 {totals["executed"]}/{planned_turns}턴 | 자동 전체 통과 {totals["strict_pass_count"]}/{planned_turns} | 오류 {totals["errors"]} | 후속 차단 {totals["blocked"]}')
     for mode, stats in totals.get('criteria_groups',{}).items():
         print(f'{mode}: {stats["strict_pass_count"]}/{stats["recorded"]} 기록된 턴 자동 검사 통과')
+    print('계획 필수 턴 성공률:',totals['plan_generation_success_pct_planned'], '| 최초 반환 계약 통과율:',totals['first_pass_return_pct_attempted'])
+    print('조건 표현 일치율(참고용):',totals['requirement_evidence_match_pct'], '| 의미적 요구사항 충족률:',totals['semantic_requirement_coverage_mean_pct'])
     print('의미 점수:',totals['semantic_mean'] if totals['semantic_scored'] else '미채점 (수동 검토 또는 --judge)')
     print(f'결과 폴더: {out.resolve()}')
     print(f'요약 JSON: {(out / "summary.json").resolve()}')
