@@ -96,6 +96,9 @@ def build_context(supervisor: "Supervisor", state: SupervisorWorkingState, count
     observations = state.get("observations", [])
     keys = ("conversation_summary", "phase", "intent", "scenario_state", "execution_plan", "pending_input")
     view = {k: deepcopy(source[k]) for k in keys if k in source and source[k] not in (None, {}, [], "")}
+    # 서버가 계산하는 후보 상한은 LLM 재계획 입력에서 반복하지 않는다.
+    for task in (view.get("execution_plan") or {}).get("tasks", []):
+        task.pop("candidate_limit", None)
     view["messages"] = _messages(source)
     results, reviews = _current_results(source)
     if results:
@@ -113,7 +116,10 @@ def build_context(supervisor: "Supervisor", state: SupervisorWorkingState, count
         "connected_services": {"profile_prepare": supervisor.ports.profile_agent is not None,
                                "profile_read": supervisor.ports.get_profile_fields is not None,
                                "memory_search": supervisor.ports.retrieve_memory is not None},
-        "observations": _compact_observations(observations),
+        "observations": _compact_observations([
+            o for o in observations if o.get("name") != "prior_advice_snapshot"
+            or memory.get("retrieval_status") != "access_denied"
+        ]),
         "issues": deepcopy(state.get("issues", [])),
         "call_index": count,
     }

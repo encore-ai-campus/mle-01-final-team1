@@ -60,7 +60,8 @@ def memory_ports(service: Any, *, authenticated_user_id: str):
 
 def bind_mvp_ports(*, memory_service: Any = None, authenticated_user_id: str = "",
                    get_profile_fields: Callable | None = None,
-                   load_memory_context: Callable | None = None) -> SupervisorPorts:
+                   load_memory_context: Callable | None = None,
+                   load_advice_snapshot: Callable | None = None) -> SupervisorPorts:
     """운영에서는 서비스 인스턴스/권한을 서버에서 주입. 로컬에서도 동일 공개 API 사용."""
     prefetch = retrieve = None
     if memory_service is not None:
@@ -70,9 +71,10 @@ def bind_mvp_ports(*, memory_service: Any = None, authenticated_user_id: str = "
         prefetch = load_memory_context
     try:
         return SupervisorPorts.with_profile_mvp(retrieve_memory=retrieve,
-            load_memory_context=prefetch, get_profile_fields=get_profile_fields)
+            load_memory_context=prefetch, get_profile_fields=get_profile_fields,
+            load_advice_snapshot=load_advice_snapshot)
     except ModuleNotFoundError as exc:
         if exc.name not in {"agent.profile", "agent.profile.profile_agent"}:
             raise
         return SupervisorPorts(retrieve_memory=retrieve, load_memory_context=prefetch,
-                               get_profile_fields=get_profile_fields)
+                               get_profile_fields=get_profile_fields, load_advice_snapshot=load_advice_snapshot)

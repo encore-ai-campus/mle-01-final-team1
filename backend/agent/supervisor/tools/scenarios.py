@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from copy import deepcopy
 import math
+from decimal import Decimal
 
 from ..contracts import MAX_SCENARIOS, SupervisorContractError
 
@@ -41,6 +42,7 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
         used_ids.add(sid)
     output: list[dict[str, Any]] = []
     horizons: list[int | None] = []
+    allocations: list[set[str] | None] = []
     next_id = 1
     for item in items:
         sid = item.get("id")
@@ -62,6 +64,16 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
         if horizon is not None and (type(horizon) is not int or horizon < 1 or horizon > 600):
             raise SupervisorContractError("분석 기간은 1~600개월이어야 합니다.")
         horizons.append(horizon)
+        allocation = assumptions.get("allocation_pct")
+        if "allocation_pct" in assumptions:
+            if (not isinstance(allocation, dict) or not allocation
+                    or any(not isinstance(k, str) or not k.strip() or type(v) not in (int, float)
+                           or not 0 <= v <= 100 or not math.isfinite(v) for k, v in allocation.items())
+                    or sum((Decimal(str(v)) for v in allocation.values()), Decimal(0)) != 100):
+                raise SupervisorContractError("allocation_pct는 0~100의 배분 비율이며 합계는 100이어야 합니다.")
+            allocations.append(set(allocation))
+        else:
+            allocations.append(None)
         actions = assumptions.get("holding_actions", [])
         if not isinstance(actions, list):
             raise SupervisorContractError("holding_actions는 list이어야 합니다.")
@@ -117,6 +129,9 @@ def prepare_scenarios(args: dict[str, Any]) -> dict[str, Any]:
     if len(output) > 1 and any(v is not None for v in horizons):
         if any(v is None for v in horizons) or len(set(horizons)) > 1:
             raise SupervisorContractError("비교 시나리오의 horizon_months는 동일해야 합니다.")
+    if len(output) > 1 and any(a is not None for a in allocations):
+        if any(a != allocations[0] for a in allocations):
+            raise SupervisorContractError("비중 비교에서는 동일한 배분 항목을 사용하세요(미배분은 0%).")
     state: dict[str, Any] = {"scenarios": output}
     if baseline:
         state["baseline_ref"] = baseline

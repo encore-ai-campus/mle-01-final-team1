@@ -1,10 +1,10 @@
-# Supervisor v15 — 토큰 및 LLM 호출 최적화
+# Supervisor v17 — 의도 확인 및 필수 정보 처리
 
-기준: GitHub main `fb9f4d6f89c2cfbe222cd51770ab4d6dc42154cd` (PR #7, Supervisor v2 분기 전략 수정 / 기존 v14), State/Profile State v3.4.
+기준: v16 후보 예산·후속 상담 패치. GitHub main 기준 누적 패치는 `4c0d5690eb22c839be1a2a47936897e11b439ef9` (PR #9 / v15), State/Profile State v3.4.
 
 ## 1. 적용 및 실행
 
-이번 ZIP은 기존 main의 변경 파일만 담은 패치다. 프로젝트 루트에 압축을 풀고 동일 경로의 파일만 덮어쓴다. Supervisor 폴더를 삭제하지 않는다. 변경 범위는 `backend/agent/supervisor/` 및 기존 `docs/Supervisor_Developer_Guide.md` 설명 문서에 한정한다. `agent/state.py`, `agent/shared/`, `agent/profile/`, `agent/memory/`, 다른 Agent, 환경 설정 및 공용 테스트는 수정하지 않는다.
+v17 증분 ZIP은 v16 적용본에, main 기준 누적 ZIP은 PR #9(main v15) 또는 v16 적용본에 덮어쓴다. 프로젝트 루트에 압축을 풀고 동일 경로의 파일만 덮어쓴다. Supervisor 폴더를 삭제하지 않는다. 변경 범위는 `backend/agent/supervisor/` 및 기존 `docs/Supervisor_Developer_Guide.md` 설명 문서에 한정한다. `agent/state.py`, `agent/shared/`, `agent/profile/`, `agent/memory/`, 다른 Agent, 환경 설정 및 공용 테스트는 수정하지 않는다.
 
 기존 `backend/.env` 또는 PowerShell 환경변수에 실제 API 키와 접근 권한이 있는 모델을 설정한다. 다음 값은 형식 예시이며 실제 값으로 대체한다. 키를 코드나 GitHub에 저장하지 않는다.
 
@@ -31,6 +31,24 @@ uv run python agent/supervisor/supervisor_main.py --state-file input.json --ques
 
 `--state-file`만 주면 파일에 이미 포함된 사용자 질문과 turn을 실행한다. `--question`을 함께 주면 새 turn으로 초기화하되 저장된 프로필과 대화는 유지한다. 추가 질문 응답으로 같은 turn을 재개할 때는 상위 Entry Router가 구성한 State를 `--state-file`로 전달한다. 로컬 CLI는 인증된 서버 Context Loader를 대체하지 않는다. 실제 운영에서는 반드시 인증된 사용자 범위의 신뢰할 수 있는 State를 전달한다.
 
+## 1.1 v17 정보 부족 및 모호함 처리
+
+- Supervisor가 목적/대상, 필수 정보, 진행 가능 여부를 판단한다. 포괄적 요청은 필요하면 계획·시나리오로 처리한다. Profile은 지정 필드 조회, 추출, 검증 및 저장 후보 준비만 담당한다. `missing_info`나 전문 Agent의 `needs_input`을 자동 질문으로 변환하지 않는다.
+- `profile_agent(operation="inspect", is_temporary=true, fields=[...])`는 지정 경로를 일괄 확인한다. 신뢰된 State와 같은 실행의 조회 기록을 재사용하며 읽기 Port는 미로딩 필드에 대해서만 호출한다. `get_profile_fields`는 기존 nested profile 또는 `profile/missing_info/field_status` envelope를 반환할 수 있다. 0, false, 빈 목록은 유효한 값이다. 명시 null/누락은 `missing`, 생략은 `not_loaded`, 모호/충돌/무효/오류/권한 거부는 각각 구별한다. 조회 실패는 누락으로 바꾸지 않는다.
+- `ask_user`는 의미 있는 진행에 필수인 사용자 확인에만 사용한다. `pending_input`의 `target`은 `profile`(정규 필드 경로), `supervisor`(의도·대상·값의 의미), 현재 `task_id` 중 하나다. Finalize는 질문 ID 충돌, 분기·대상, 필드, 중복을 검사하고 기존 질문/답변을 보존한다. `answers` 또는 `resolved`는 LLM이 생성하지 않는다.
+- 상위 Entry Router는 사용자 답변을 인증·해석·검증한 후 같은 `turn_id`로 재개한다. `clarification.resolve_validated_answers(source, {question_id: {field: value}})`는 검증된 질문별 완전한 답변을 연결하는 부분 패치를 반환한다. 원본 저장은 하지 않는다. 기존 `phase="waiting_for_user"`를 유지한 상태로 재호출하면 답변에 따른 구 실행의 무단 재사용을 막기 위해 새 계획 revision을 발급한다. 실제 `ask_user → END`, 메시지 추가, 인증, `extra_answers` 전달은 상위 그래프에 연결해야 한다.
+- 자세한 상태 계약·예시는 가이드 2.3절과 6.1절에 있다. 새 LLM, 노드, MainState 최상위 필드는 추가하지 않는다. Profile/Memory 팀 구현은 수정하지 않았다.
+
+## 1.2 v16부터 유지하는 핵심 연동 규칙
+
+- 조회 후보와 재무 전략은 별개다. 상품·정책 대안만 비교할 때는 분기하지 않는다. 경제적 행동/조건이 달라 별도 전망이 필요하면 분기한다.
+- 상품과 정책 각각 현재 계획 전체 최대 6개, 비분기/1분기 3개, 2분기 각각 3개, 3분기 각각 2개. 같은 분기·Agent의 여러 검색 작업은 슬롯을 나누며 공통 검색은 소비 분기 모두에서 차감한다. 적합 후보 부족은 허용한다. 근거 문서 수와 누적 검색 시도 횟수에 대한 제한은 아니다.
+- Plan에서 `execution_plan.tasks[].candidate_limit`를 Python으로 부여한다. Fund에는 부여하지 않는다. LLM 스키마/자연어 objective에는 숫자를 반복하지 않는다. Dispatcher는 `candidate_budget.search_agent_input(task, agent_input)`의 숫자 필드를 전문 검색에 전달하고, Collector는 `validate_candidate_output(task, output)`으로 초과를 반려해야 한다. 검색 결과는 `data.candidates`(사실 조회는 빈 배열)로 정규화한다. 이 함수들을 실제 Dispatcher/Collector에서 호출하기 전에는 하위 검색의 제한이 자동 적용되지 않는다.
+- 후속 상담은 새 turn에서 서버가 보존한 `memory.last_advice_ref`와 인증된 `SupervisorPorts.load_advice_snapshot`을 사용한다. 내부 Decision의 `selected_scenario_id`와 `intent.target_advice_ref`로 이전 분기를 선택하고 Python이 기존 가정을 복원한다. 새 초안 없이 선택만 하면 단일 분기가 되고, 세부 비중 비교를 요청하면 최대 3개의 새로운 분기를 만든다. 현재 실제 프로필을 사용하며 과거 실제 계약은 다시 검증한다. 상담 저장소와 이전 결과 재사용은 상위 그래프의 연동 책임이다.
+- `assumptions.allocation_pct`는 배분 항목별 퍼센트 사전이다. Python은 0~100, 합계 100, 비교 분기 간 동일 항목을 검증한다. Supervisor는 가정만 제안하고 Fund가 실제 배분 금액과 전망을 계산한다.
+
+자세한 연동 예시는 `docs/Supervisor_Developer_Guide.md`의 5.5절에 있다. 기본 단일 LLM 제출 경로와 내부 노드 4개, 최상위 State는 유지한다.
+
 ## 2. 내부 배치
 
 ```text
@@ -38,6 +56,8 @@ supervisor/
 ├── supervisor_main.py    # Supervisor 조립, 실행, 추적, 공개 반환
 ├── state.py              # SupervisorWorkingState: 내부 전용 State
 ├── contracts.py          # 결정·작업·도구 입출력, DAG 검증
+├── candidate_budget.py   # Python 후보 슬롯 배정 및 실행 경계 검증
+├── clarification.py      # 확인 질문 병합·검증된 답변 연결
 ├── graph.py              # 4개 노드 연결 및 부모 Graph Command 어댑터
 ├── runtime.py            # 직접 질문/JSON 입력, 실제 API, 최종 State 출력
 ├── nodes/
@@ -54,7 +74,9 @@ supervisor/
 │   ├── ports.py          # 인증 바인딩과 도구 계약 검증
 │   ├── memory.py         # 새 turn 기본 조회, 상세 조회 병합
 │   ├── profile_fields.py # 공용 모델 import 없는 v3.4 필드 검사
-│   └── scenarios.py      # 가상 상태 준비 및 분기 검사
+│   ├── profile_inspection.py # 지정 필드 조회·상태 구분·재사용
+│   ├── advice.py         # 이전 상담 스냅샷 조회·선택·재분기
+│   └── scenarios.py      # 가상 상태 준비 및 비중 검사
 └── testing/
     └── test_contracts.py # 최소 오프라인 계약 검사
 ```
@@ -68,7 +90,7 @@ flowchart TD
     A[실제 질문과 MainState] --> B[기본 Memory 조회]
     B --> R[Reason: 실제 OpenAI API]
     R <-->|추가 사실 조회 / 준비 필요| T[Profile / Memory / 선택적 Scenario]
-    R -->|intent + 분기 초안 + DAG| P[Plan: 시나리오 및 DAG 정규화]
+    R -->|intent + 분기 초안 + DAG| P[Plan: 분기 및 DAG 정규화, 후보 예산 배정]
     P --> F[Finalize: 계약 검증]
     R -->|필수 질문 또는 검증된 결과 설명| F
     F -->|검증 반려| R
@@ -156,7 +178,20 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 제작 환경에는 실제 API 키와 LangGraph가 없어 운영 모델 호출과 실제 그래프 실행을 검증하지 않았다. 로컬 오프라인 검사 결과와 미실행 항목을 아래에 기록한다.
 
-- 오프라인 계약 검사 25개 중 22개 통과(기존 19개 유지 + 6개 추가). 한 번의 HTTP 계약 호출로 분기/DAG 반환, ID 복구와 잘못된 참조 반려, 기준 계약 참조 검증, 추가 Memory 조회 왕복 유지, Context의 필수값/권한 격리 및 기억 중복 제거를 검사했다.
+v17 오프라인 회귀 검사 50개 중 47개 통과, 3개 미실행(LangGraph·실제 Profile/Memory 모듈 미설치). 실제 API 및 상위 전문 Agent 연동은 운영 환경에서 별도 검증한다.
 - 실제 Profile/Memory MVP 연동 2개 및 부모 LangGraph Command 이동 1개: 제작 환경에 해당 모듈이 없어 미실행.
 - 실제 OpenAI API 호출 및 실제 전문 Agent 실행: 미검증. 기본 실행은 실제 API만 사용한다.
 - 동일한 2분기 적금 비교의 제어된 계약 입력으로 비교한 값(실제 토큰이 아님): 시스템 프롬프트 UTF-8 16,533 → 7,540 bytes, LLM 호출 2 → 1, 프롬프트·스키마·Context 합계 46,582 → 12,575 bytes. API 내부 직렬화 오버헤드와 출력 토큰을 제외했다.
+
+
+### v16 제작 검증
+
+- 변경 전 25개 계약 검사 유지, 신규 12개 추가: 총 37개 중 34개 통과, 3개 환경 의존 검사 건너뜀.
+- 후보 상한, 공통 조회 슬롯 차감, 초과 반려, B안 선택·재분기, 비중 검사, 과거 계약 재검증을 오프라인에서 확인했다.
+- 실제 API 비용/모델 판단 및 실제 상위 Dispatcher·Collector·상담 저장소 연결은 미검증이다.
+
+### v17 제작 검증
+
+- 기존 37개 검사 유지, 확인 질문/조회 상태/재개 계약 13개 추가: 50개 중 47개 통과, 3개 환경 의존 검사 미실행.
+- v16 대비 시스템 프롬프트 파일 UTF-8 크기 8,668 → 8,158 bytes. 실제 모델 토큰이나 판단 정확도 측정값은 아니다.
+- Profile 고도화 완료를 전제로 한 읽기/준비 어댑터 계약과 오프라인 제어 흐름을 검증했다. 실제 팀 Profile의 고도화, DB 연동, 상위 Entry Router/Collector/Dispatcher 및 실제 OpenAI 판단은 별도 작업이다.

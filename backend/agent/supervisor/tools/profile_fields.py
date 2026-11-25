@@ -191,6 +191,17 @@ def validate_overlay(values: Any, *, supplied: bool = False) -> None:
             _scalar(k, v)
 
 
+def canonical_profile_path(field: Any) -> str:
+    """MVP의 짧은 필드명을 공용 프로필 경로로 정규화한다."""
+    if isinstance(field, str):
+        if field in READ_FIELDS:
+            return field
+        matches = [path for path in READ_FIELDS if path.rsplit(".", 1)[1] == field]
+        if len(matches) == 1:
+            return matches[0]
+    _fail("field", "use a known basic_profile/financial_profile path")
+
+
 def validate_read_fields(fields: Any) -> list[str]:
     if not isinstance(fields, list) or not fields or any(not isinstance(f, str) or f not in READ_FIELDS for f in fields):
         _fail("fields", "use allowed basic_profile/financial_profile paths; age is view only")

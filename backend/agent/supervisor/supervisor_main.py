@@ -17,6 +17,7 @@ from .state import SupervisorWorkingState, copy_main_source, create_working_stat
 from .tools.ports import SupervisorPorts
 from .tools.profile_fields import validate_profile, FIELDS
 from .tools.memory import initial_memory
+from .tools.advice import prior_advice_observation
 from .nodes import reason as reason_node, tools as tools_node, plan as plan_node, finalize as finalize_node
 
 DecisionEngine = Callable[[dict[str, Any]], Decision | dict[str, Any]]
@@ -69,7 +70,12 @@ class Supervisor:
                   and previous.get("retrieval_consultation_id") == source.get("consultation_id")
                   and previous.get("prefetch_status") in {"found", "no_match", "failed", "access_denied"})
         self._emit("initial_memory", {"reused": reused, "memory": memory}, route="reason")
-        return create_working_state(source)
+        state = create_working_state(source)
+        prior = prior_advice_observation(source, self.ports.load_advice_snapshot)
+        if prior is not None:
+            state["observations"].append(prior)
+            self._emit("prior_advice_snapshot", {"status": prior["result"]["status"]}, route="reason")
+        return state
 
     def reason(self, state: SupervisorWorkingState) -> dict[str, Any]:
         result = reason_node.run(self, state)

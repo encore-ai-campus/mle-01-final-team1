@@ -1,11 +1,11 @@
-# Supervisor v15 개발 및 연동 가이드
+# Supervisor v17 개발 및 연동 가이드
 
-> **작성일:** 2026-11-24 · **대상:** 청년 금융 멀티에이전트 서비스 개발자  
-> **기준 코드:** GitHub main `fb9f4d6f89c2cfbe222cd51770ab4d6dc42154cd` (PR #7, 기존 v14)  
-> **변경 요약:** 실제 API·Profile/Memory 연동과 독립 분기 우선 계약 유지. 프롬프트·명령·Context 간소화, 시나리오와 DAG 동시 제출, 실제 API 사용량 진단 강화.  
+> **작성일:** 2026-11-25 · **대상:** 청년 금융 멀티에이전트 서비스 개발자  
+> **기준 코드:** v16 패치 적용본; GitHub main 누적 기준 `4c0d5690eb22c839be1a2a47936897e11b439ef9` (PR #9, v15)  
+> **변경 요약:** v16 후보 예산·후속 분기 유지. 의도/정보 부족 판단 분리, 지정 필드 상태 계약, 질문 중복 및 참조 검증, 같은 turn 답변 연결 추가.  
 > **설계 기준:** State / Profile State v3.4, [Memory MVP 병합 커밋 `36974c8`](https://github.com/encore-ai-campus/mle-01-final-team1/commit/36974c86a781ec2ea87b94856fafc686ca44d6f3)
 
-**적용:** v15는 변경분 ZIP이다. PR #7 기준 기존 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
+**적용:** v17 증분 ZIP은 v16 적용본에, main 기준 누적 ZIP은 PR #9(v15) 또는 v16 적용본에 덮어쓴다. 프로젝트 루트에 압축을 풀어 같은 경로만 덮어쓴다. Supervisor 폴더 전체를 삭제하지 않는다. 변경된 Supervisor 파일과 이 설명 문서만 포함하며 외부 공용 State, Profile/Memory 및 전문 Agent는 수정하지 않는다.
 
 ## 1. 목적과 책임 범위
 
@@ -19,8 +19,8 @@ Supervisor는 사용자 질문을 해석하고 필요한 정보를 확인한 뒤
 
 | 구성 요소 | 책임 | Supervisor와의 관계 |
 |---|---|---|
-| Supervisor | 의도, 정보 보완, 시나리오, 전체 작업 계획, 재계획 | 계획 확정 및 다음 노드 반환 |
-| Profile | 현재 사용자 정보 확인 및 변경 후보 추출 | 필요한 정보만 조회·준비 |
+| Supervisor | 의도/대상 확인, 필수 정보 판단, 사용자 질문, 시나리오, 계획·재계획 | `ask_user` 또는 실행 계획/최종 종합 경로 반환 |
+| Profile | 지정 사용자 필드 조회·유효성 검사, 값 추출 및 변경 후보 준비 | 누락·모호·충돌·조회 상태 보고 (사용자 질문을 직접 생성하지 않음) |
 | Memory | 이전 상담·추천·선호·결정 조회 | 기본 자동 조회 및 상세 조회 |
 | Policy | 청년 정책, 지원 혜택 및 자격 검토 | 작업 지시에 맞춰 조사 |
 | Product | 금융상품 및 대출 조건 조사 | 작업 지시에 맞춰 검색 |
@@ -39,7 +39,7 @@ flowchart TD
     subgraph S[Supervisor Subgraph]
         R -->|call_tool| T[Tools: Profile / Memory / 선택적 Scenario]
         T --> R
-        R -->|submit_plan: intent + 분기 초안 + DAG| P[Plan: 시나리오·전체 DAG 정규화]
+        R -->|submit_plan: intent + 분기 초안 + DAG| P[Plan: 분기·DAG 정규화 및 후보 예산 배정]
         P --> F[Finalize: 계약 및 안전 검증]
         R -->|ask_user / compose| F
         F -->|검증 반려| R
@@ -50,16 +50,16 @@ flowchart TD
     O --> C[final_advice]
 ```
 
-기본 Memory 조회는 Subgraph 실행 전 `Supervisor.initial()`에서 수행한다. 실제 LangGraph 내부 노드는 `reason`, `tools`, `plan`, `finalize`의 네 개이며 LLM을 호출하는 노드는 Reason뿐이다.
+기본 Memory 조회와 선택적 직전 상담 스냅샷 조회는 Subgraph 실행 전 `Supervisor.initial()`에서 수행한다. 실제 LangGraph 내부 노드는 `reason`, `tools`, `plan`, `finalize`의 네 개이며 LLM을 호출하는 노드는 Reason뿐이다.
 
-**v15 기본 경로:** 새 사실 조회가 필요 없으면 `submit_plan` 한 번에 `intent`, 분기 초안 `scenario_state`, 전체 `execution_plan`을 제출한다. Plan에서 시나리오 정규화와 계약 참조 검증을 수행하므로 이를 위한 별도 Tools → Reason 왕복은 필요하지 않다. `prepare_scenarios` 독립 도구도 호환 목적으로 유지한다. 실제 Profile/Memory 등 추가 사실 조회, 준비된 분기 ID가 필요한 경우 및 검증 반려에는 기존 경로를 사용한다. 새 분기를 만들지 않는 요청은 분기 초안을 생략할 수 있고, 기존 준비된 분기를 변경 없이 참조할 수 있다. 내부 Decision에 새 초안 필드가 생겼지만 MainState에는 기존 `scenario_state`만 반영한다.
+**v16 기본 경로(v15 유지):** 새 사실 조회가 필요 없으면 `submit_plan` 한 번에 `intent`, 분기 초안 `scenario_state`, 전체 `execution_plan`을 제출한다. Plan에서 시나리오 정규화와 계약 참조 검증을 수행하므로 이를 위한 별도 Tools → Reason 왕복은 필요하지 않다. `prepare_scenarios` 독립 도구도 호환 목적으로 유지한다. 실제 Profile/Memory 등 추가 사실 조회, 준비된 분기 ID가 필요한 경우 및 검증 반려에는 기존 경로를 사용한다. 새 분기를 만들지 않는 요청은 분기 초안을 생략할 수 있고, 기존 준비된 분기를 변경 없이 참조할 수 있다. 내부 Decision에 새 초안 필드가 생겼지만 MainState에는 기존 `scenario_state`만 반영한다.
 
 | 단계 | 처리 | 내부 출력 |
 |---|---|---|
 | 초기화 | 허용된 MainState 복사, 프로필 스키마 검사, 기본 기억 조회 | `source` |
 | Reason | 현재 질문·정보 상태·도구 결과·기존 계획을 바탕으로 다음 행동 판단 | `decision`, `reason_calls` |
 | Tools | 선택한 도구 요청 검증, 실제 서비스 호출 또는 시나리오 준비 | `observations`, `tool_calls` |
-| Plan | 작업 ID·명령·의존성·분기를 정규화하고 DAG 검사 | `candidate_patch`, `candidate_error` |
+| Plan | 작업 ID·명령·의존성·분기를 정규화하고 후보 예산 배정·DAG 검사 | `candidate_patch`, `candidate_error` |
 | Finalize | 계획, 필수 질문, 저장 변경 후보, 기존 검증 결과 확인 | `main_patch`, `next_node` 또는 `issues`와 `retry` |
 | 반환 | 내부 실행 종료, 검증된 부분 업데이트 반환 | `SupervisorOutcome` |
 
@@ -76,6 +76,72 @@ flowchart TD
 
 반복 실행의 기본 상한은 LLM 판단 12회, 내부 도구 6회, 내부 계획 검증 복구 1회이다. 외부 검증 반려에 따른 재계획 횟수는 별도의 `execution_plan.review_retry_count`로 관리하며 현재 상한은 1회이다. 기본 Memory 조회의 하위 검색은 내부 `tool_calls`와 별도로 처리된다.
 
+### 2.3 정보 부족과 의도 모호함 (v17)
+
+| 상황 | 처리 주체와 동작 |
+|---|---|
+| 목적/대상이 불명확 | Supervisor가 대화 및 Memory 확인; 정말 진행할 수 없으면 `ask_user` (target=supervisor) |
+| 사용자 값 미확인 | Supervisor가 필요한 필드만 지정, Profile 조회 포트가 존재·형식·상태 확인 |
+| 세전/세후, 충돌하는 값 등 | Profile이 `field_status`로 문제 보고, Supervisor가 이번 상담에 필수인지 판단 |
+| 선택 값 부족 또는 여러 전략 가능 | 검색/조건부 분석 또는 시나리오 계획. 자동 사용자 질문 금지 |
+| 전문 Agent `needs_input` | 현재 run의 `needed_fields`를 보고 내부 조회/선행 작업으로 해결 가능한지 판단; 불가하면 필수 질문만 발행 |
+| 조회 실패/권한 거부 | 미등록과 구분, 같은 요청에서 실패 필드 반복 호출 금지. 가능한 범위와 한계를 남김 |
+
+```mermaid
+flowchart TD
+    U[사용자 질문 / 재개] --> R[Reason: 의도와 필수 정보 판단]
+    R -->|맥락으로 해결| P[전체 DAG 제출]
+    R -->|사용자 정보 필요| T[Tools: 지정 필드 조회]
+    T -->|값과 field_status| R
+    R -->|의미 있는 진행 불가| F[Finalize: 질문 대상/중복/ID 검증]
+    F --> Q[ask_user: pending_input 반환]
+    Q --> E[상위 ask_user → END]
+    E -->|다음 답변: 동일 turn| A[Entry Router: 검증된 답변 연결]
+    A --> R
+    P --> X[Plan/Finalize: plan_validator]
+```
+
+Profile은 상담 목적이나 필요한 정보 목록을 다시 추론하지 않는다. Supervisor가 필요한 정보를 지정하며, 전문 Agent는 자기 작업 중 부족한 필드를 보고한다. 사용자에게 정말 질문해야 하는지의 **의미적 판단은 LLM**, 필드·상태·참조·중복 검증은 Python이다. 모든 프로필 항목을 채운 뒤에만 상담을 시작하도록 강제하지 않는다.
+
+**사용자 질문 반환 예시** (별도 최상위 State 없음):
+
+```json
+{
+  "phase": "waiting_for_user",
+  "pending_input": [
+    {
+      "id": "ask_01",
+      "question": "현재 평균 월 생활비는 얼마인가요?",
+      "fields": ["financial_profile.monthly_living_expenses_krw"],
+      "target": "profile",
+      "scenario_id": null,
+      "status": "pending"
+    }
+  ]
+}
+```
+
+`SupervisorOutcome.next_node="ask_user"`로 반환한다. LLM이 ID를 생략하면 Python이 기존/명시 ID와 충돌하지 않도록 발급한다. `profile`은 정규 프로필 경로만 허용하며 레거시 짧은 필드명은 정규화한다. 의도, 이전 상담 대상, 소득의 세전/세후 같은 의미 확인은 `target="supervisor"`와 `fields=["income_basis"]` 같은 의미 키를 사용한다. 전문 작업 전용 질문은 현재 `task_id`를 사용하며 시나리오 참조가 일치해야 한다. 동일한 실제 사용자 정보는 `scenario_id=null`로 한 번만 묻는 것을 원칙으로 한다. 정확히 동일한 대상·필드·분기는 중복 제거, 같은 ID의 재질문은 표현 수정 가능, 겹치는 질문은 남은 필드만 다시 제출하도록 반려한다. 기존 resolved ID 재사용, 임의 answers/해결 선언은 차단한다.
+
+**다음 입력 재개** (Entry Router 연결 예시):
+
+```python
+from agent.supervisor.clarification import resolve_validated_answers
+
+# 서버가 동일 인증 사용자의 대기 State를 복원하고 자연어 답변의 의미/형식을 검증한 후:
+patch = resolve_validated_answers(state, {
+    "ask_01": {"financial_profile.monthly_living_expenses_krw": 1200000}
+})
+resumed = {**state, **patch}
+# 기존 turn_id, consultation_id, phase="waiting_for_user" 및 계획/분기를 유지.
+# 실제 사용자의 새 메시지는 Entry Router에서 messages에 추가한다.
+outcome = supervisor.run(resumed)
+```
+
+이 함수는 질문별 완전한 검증 답변(0, false, 빈 목록 허용)을 `answers`로 연결하고 `status="resolved"`로 표시하는 부분 패치만 만든다. 부분 응답/자연어 해석·인증·승인 저장은 상위 Entry Router/서비스 책임이다. 답변은 실제 원본 프로필로 자동 저장하지 않는다. 실제 일회성 값은 `intent.supplied_values`, 가정은 기존 분기 가정, 작업 전용 답변은 Dispatcher가 해당 질문의 `answers`를 `extra_answers`에 연결한다. 기존 계획이 있는 대기 turn에 해결된 답변이 연결되면 Plan은 안전을 위해 계획 revision을 갱신하고 이전 run을 재사용하지 않는다. 이후 `phase="planning"`으로 반환하므로 다음 정상 재방문마다 리셋하지 않는다. 미해결 필수 질문은 관련 계획/최종 답변을 막는다. 해당 답변이 기존 결과를 바꾸는지 정밀하게 판별해 일부 작업만 갱신하는 최적화는 아직 하지 않는다.
+
+상위 `ask_user` 노드, END, Entry Router의 답변 처리 및 실제 전문 Agent의 `needs_input` 연결은 이 패치가 구현하는 범위 밖이다. 고도화된 Profile 서비스는 아래 6.1절의 계약에 맞춰 서버에서 바인딩한다.
+
 ## 3. 코드 구조 및 파일별 역할
 
 ```text
@@ -84,6 +150,8 @@ backend/agent/supervisor/
 ├── supervisor_main.py
 ├── runtime.py
 ├── state.py
+├── clarification.py    # 질문 병합·답변 연결
+├── candidate_budget.py  # 후보 예산 및 실행 경계 검증
 ├── contracts.py
 ├── graph.py
 ├── nodes/
@@ -99,7 +167,9 @@ backend/agent/supervisor/
 │   ├── integration.py
 │   ├── ports.py
 │   ├── memory.py
+│   ├── profile_inspection.py # 지정 필드 조회 및 상태 분리
 │   ├── profile_fields.py
+│   ├── advice.py        # 이전 상담 선택 및 재분기
 │   └── scenarios.py
 ├── testing/
 │   └── test_contracts.py
@@ -118,6 +188,10 @@ backend/agent/supervisor/
 | `nodes/reason.py` | LLM 입력 View 생성, 구조화 판단 검증, 다음 노드 선택 |
 | `nodes/tools.py` | 도구 선택·실행, 인증된 조회 결과 활용, 중복 조회 제어 |
 | `nodes/plan.py` | 의도 병합, 시나리오 및 기억 반영, 실행 계획 후보 구성 |
+| `clarification.py` | 질문 정규화/중복/대상 검증, 검증된 답변의 동일 turn 연결 |
+| `tools/profile_inspection.py` | 읽기 포트 조회 및 필드 상태 정규화, 동일 실행 조회 재사용 |
+| `candidate_budget.py` | 후보 상한 자동 배정 및 Dispatcher/Collector 연동 함수 |
+| `tools/advice.py` | 인증된 상담 스냅샷 선택 및 재분기 |
 | `nodes/finalize.py` | 최종 안전 검증, 추가 질문·승인 후보·완료 결과 검사, 검증 반려 및 반환 |
 | `llm/openai_api.py` | `OPENAI_API_KEY`, `OPENAI_MODEL`을 사용하는 Responses API HTTP 요청과 응답 검증 |
 | `llm/adapter.py` | Pydantic `DecisionSchema`, `TaskDraftSchema`, `PlanDraftSchema` 및 선택적 ChatModel 어댑터 |
@@ -410,7 +484,7 @@ flowchart TD
 다음 내용은 현재 Supervisor의 반환 계약을 소비하기 위한 상위 그래프 구현 지침이며, 이번 패치가 실제 Dispatcher나 Collector를 구현한다는 의미가 아니다.
 
 1. `plan_validator`에서 현재 계획, 분기 소속, 필수 입력을 확인한다. `depends_on`이 충족된 대기 작업만 Dispatcher가 실행한다. 실행 대상 분기 ID가 없으면 공통/비분기 작업의 기본 View만 구성한다. 공통 작업을 여러 분기의 통합 검색으로 해석하지 않는다.
-2. Dispatcher는 `task_id`, `run_id`(실행 시 발급), `plan_revision`, `scenario_id`, `objective`, 원래 `user_query`, 필요한 `profile_view`, 직접 선행 작업의 `upstream_results`를 전달한다. 실제 프로필 → `intent.supplied_values` → 해당 분기 `overrides`의 순서로 병합 후 필요한 항목만 투영한다. 해당 분기의 `assumptions.holding_actions`는 `profile_view.holding_actions`에, 평가 기간 등 필요한 가정은 업무 지시에 맞게 전달한다. 다른 분기의 가정이나 전체 시나리오 목록을 전문 Agent의 계산 입력으로 주지 않는다. 같은 Agent라도 작업별 `Send` 또는 독립 호출로 별도 Local State를 구성한다. 원래 `user_query`는 문맥 참고용이며 실제 실행 범위는 `objective`와 자기 분기의 View가 우선한다.
+2. Dispatcher는 `task_id`, `run_id`(실행 시 발급), `plan_revision`, `scenario_id`, `objective`, 원래 `user_query`, 필요한 `profile_view`, 직접 선행 작업의 `upstream_results`를 전달한다. 실제 프로필 → `intent.supplied_values` → 해당 분기 `overrides`의 순서로 병합 후 필요한 항목만 투영한다. 해당 분기의 `assumptions.holding_actions`, `horizon_months`, `allocation_pct` 등 필요한 가정은 `profile_view`에 투영한다. 검색 작업에는 서버 `candidate_limit`도 전달한다(5.5절). 다른 분기의 가정이나 전체 시나리오 목록을 전문 Agent의 계산 입력으로 주지 않는다. 같은 Agent라도 작업별 `Send` 또는 독립 호출로 별도 Local State를 구성한다. 원래 `user_query`는 문맥 참고용이며 실제 실행 범위는 `objective`와 자기 분기의 View가 우선한다.
 3. Collector가 실제 전문 결과와 작업 상태를 갱신한다. 선행 결과가 완료되면 남은 작업을 자동 실행한다. 아직 완료되지 않은 결과나 다른 분기의 결과를 전달하지 않는다.
 4. 모든 필수 작업이 끝나면 Evidence / Reflection에서 해당 분기·현재 run의 결과를 검증한다. 실제 실패, 필수정보 부족, 조건 변경 또는 검증 반려로 기존 계획이 실행 불가능한 경우에만 Supervisor에 재계획을 요청한다.
 5. 상위 비교 준비/Final Advice가 검증된 분기별 결과를 모은다. 동일 기간·단위·기준일·실제/가정·세전/세후를 확인하고 수치 차이는 코드에서 계산한 뒤 최종 LLM은 결과의 의미와 장단점을 설명한다. 분기 누락/실패를 정상 비교 결과로 표시하지 않는다. 이 단계는 Supervisor의 구현 범위가 아니다.
@@ -419,18 +493,120 @@ flowchart TD
 
 현재 구현은 필수 intent, 전략 비교의 분기 수, 모든 선언 분기의 독립 작업 존재, 순환 의존성, 잘못된 ID, 분기 교차 의존 및 공통 작업의 분기 결과 의존, 동일 목적·분기·의존 조건의 중복 작업, 공통 Fund 금지 및 공통 조회의 2개 이상 분기 사용 여부를 검사한다. 반려 사유는 Reason에 전달하고 기존 복구 한도를 적용한다. 동일 계획과 입력이 유지되고 검토 반려가 없으면 기존 작업 상태와 `run_id`를 보존한다. 계획 또는 입력 일부가 바뀌면 작업 전체가 초기화될 수 있으므로 변경된 작업만 재실행하는 최적화는 후속 개선 범위이다.
 
+### 5.5 후보 예산, 이전 시나리오 선택 및 비중 계약 (v16)
+
+**후보는 재무 시나리오가 아니다.** `candidate_compare`는 분기 없음 또는 선택된 단일 전략 안에서 처리한다. 상품·정책 후보를 모두 적용하거나 후보마다 Fund 전망을 재실행하지 않는다. 대체 후보는 대안으로 남기고 동시 활용 가능성이 확인된 항목만 계산에 반영한다. 전략 차이가 명시적으로 분석되어야 하는 경우만 2~3개 분기한다.
+
+| 현재 분기 수 | 분기별 상품 상한 | 분기별 정책 상한 | 종류별 전체 상한 |
+|---|---:|---:|---:|
+| 비분기/1개 | 3 | 3 | 3 |
+| 2개 | 3 | 3 | 6 |
+| 3개 | 2 | 2 | 6 |
+
+`min(3, 6 // max(1, 활성 분기 수))`를 서버가 계산한다. 같은 분기·종류의 검색 작업이 여러 개면 먼저 각 작업에 1개씩 배정 후 남는 슬롯을 task_id 순서로 라운드로빈 배분한다. 공통 작업은 직접/간접 소비 분기 모두에서 차감한다. 최소 슬롯 부족 시 계획을 반려해 통합 또는 수정한다. Fund에는 상한을 부여하지 않는다. 상품과 정책의 예산은 별개(각각 최대 6개)이며, 한 요청의 현재 계획이 반환하는 후보 수의 제한이다. 검색 시도 횟수, DB에서 내부적으로 검토하는 레코드 수, 근거 URL 수 또는 모든 종류를 합한 6개 제한은 아니다.
+
+`candidate_limit`는 LLM `TaskDraft`가 아닌 **정규화된 `execution_plan.tasks[]`의 서버 필드**다. 기존 공용 MainState 타입은 변경하지 않는다. 다음 계획을 재방문해 상한이 같으면 동일 작업을 유지하고, 예전 상한이 다르면 revision을 올려 새 실행을 요구한다. Reason의 LLM Context에서는 이 필드를 제거해 중복 입력하지 않는다.
+
+```python
+from agent.supervisor.candidate_budget import (
+    validate_candidate_limits, search_agent_input, validate_candidate_output,
+)
+
+# plan_validator: 부모 그래프에서 검증
+validate_candidate_limits(state["execution_plan"], state.get("scenario_state"))
+
+# Dispatcher: 공용 AgentInput 작성 및 run_id 발급 후, Product/Policy 작업만
+payload = search_agent_input(task, agent_input)
+# payload["candidate_limit"] = 2 또는 3 등. 검색 노드에서 숫자를 사용해
+# 적격 후보를 정렬/선택하고 최대 그 수만 반환하도록 구현한다.
+# 결과 외피는 AgentOutput과 동일하며 data.candidates[]를 갖도록 어댑터에서 정규화.
+
+# Collector: 기존 task_id/run_id/plan_revision/scenario_id 확인과 함께 호출
+validate_candidate_output(task, agent_output)
+# 초과 시 반려/해당 작업 재실행. 초과 결과를 Fund에 넘기지 않는다.
+```
+
+검색 Agent에서 숫자 제한을 직접 적용해야 검색 토큰 절감이 가능하다. `search_agent_input()`이 반환하는 복사본에는 `candidate_limit`가 추가되며, 팀 공용 `AgentInput` TypedDict는 이번 패치에서 바꾸지 않는다. 전문 Agent 연결 시 확장 입력으로 받거나 동일 숫자를 별도 `limit` 인자로 넘기면 된다. `validate_candidate_output`은 결과의 `data.candidates[]` 개수와 작업/분기 참조를 검사한다. 사실 조회는 `candidates=[]`, 적합 후보가 없거나 적으면 0~상한 개수로 반환한다. 후보에 포함된 출처·evidence_refs는 자르지 않는다. 이전 후보와 새 검색 결과를 섞어 표시하는 경우 상위 Collector/Final Advice가 같은 예산을 지켜야 한다. **현재 `workflow.py`는 bootstrap 골격이므로 위 함수 연결과 실제 Product/Policy의 숫자 사용은 팀 연동 과제다.**
+
+#### 후속 상담: 선택 및 재분기
+
+Final Advice 또는 별도 상담 저장 서비스가 기존 분기를 신뢰할 수 있는 스냅샷으로 보존하고, Context Loader가 새 turn에 `memory.last_advice_ref`를 남긴다. 서버가 인증된 읽기 함수 `SupervisorPorts(load_advice_snapshot=...)` 또는 `bind_mvp_ports(load_advice_snapshot=...)`를 주입한다. 함수는 전달된 `advice_ref`가 해당 사용자/상담에 속하는지 검사한 뒤 아래 계약으로 반환한다. LLM의 사용자 ID/인증 입력은 받지 않는다. 저장 기능을 Supervisor에 두지 않는다.
+
+```json
+{
+  "status": "found",
+  "advice_ref": "advice_1",
+  "scenario_state": {
+    "scenarios": [
+      {"id": "s_a", "label": "A안", "overrides": {}, "assumptions": {"horizon_months": 60}},
+      {"id": "s_b", "label": "B안", "overrides": {}, "assumptions": {"horizon_months": 60, "allocation_pct": {"저축": 50, "상환": 50}}}
+    ]
+  }
+}
+```
+
+위 JSON은 저장 계약 형식을 보이는 예시이며 실제 사용자 상담 기록이 아니다. 새 turn에 활성 계획·시나리오가 없으면 직전 참조만 한 번 읽어 내부 `observations`에 둔다. 반환 상태·참조·분기 형식을 검증한다. 권한 거부 또는 미연결/미확인 시 이전 조건을 임의 복원하지 않는다. `status=access_denied`는 내용을 전달하지 않는다. 이전 계약 유지·해지는 과거 참조만으로 승인하지 않고 기존 `prepare_verified_scenarios`의 현재 검증을 통과해야 한다.
+
+- **B안 상품 더 검색:** Reason은 `submit_plan`, `intent.operation=continue`, `intent.target_advice_ref=advice_1`, `selected_scenario_id=s_b`와 B안 작업 DAG를 제출한다. `scenario_state` 초안은 생략한다. Plan이 B안을 정확히 복원하고 후보 상한 3개를 부여한다. 다른 두 분기는 새 계획에 포함되지 않는다.
+- **B안 비중 70:30, 50:50, 30:70 비교:** `operation=compare`, `analysis_mode=strategy_compare`, 동일 참조·선택 ID와 새로운 3개 분기의 변경 가정·DAG를 제출한다. 기존 분기의 변경되지 않은 overrides/assumptions를 Python이 각 분기에 복사한다. 각 분기별 `allocation_pct`와 `holding_actions` 등 명시한 값은 해당 필드 단위로 교체한다. 새 분기별 상한은 각각 2개다.
+- 이전 실제 프로필 값·상품 금리·결과는 자동으로 현재 사실이 되지 않는다. 현재 프로필과 확인된 선행 결과를 사용한다. 새 저장 또는 승인으로 해석하지 않는다. 이전 결과를 그대로 설명/재사용하는 경로에는 상위 그래프가 인증된 결과와 검수 상태를 복원해야 한다. v16은 이를 우회하지 않는다.
+- 로컬에서는 개발자가 보유한 명시적 스냅샷 파일로 선택 경로를 확인할 수 있다. 예: `uv run python agent/supervisor/supervisor_main.py --advice-file advice.json --question "B안에 맞는 상품을 더 찾아줘"`. 실제 API 키가 필요하며 로컬 파일은 운영 인증/저장소를 대체하지 않는다. 스냅샷에 실제 계약 참조가 있다면 현재 검증 포트가 필요하다.
+
+#### 비중 검사
+
+`scenario_state.scenarios[].assumptions.allocation_pct`에 배분할 목표 ID 또는 합의된 항목 이름을 키로, 퍼센트 숫자를 값으로 넣는다. `{"저축": 70, "상환": 30}`처럼 지정한다. Python은 숫자 여부(불리언 제외), 0~100 범위, 유한성, 정확한 합계 100을 검사한다. 비교 분기에는 동일한 항목을 두고 미배분 항목은 0으로 표시한다. 명시된 비율과 비교 개수를 보존하고, 미지정 비율은 Supervisor가 비교용 가정으로 제안한다. 최적 배분 비율을 계산하거나 월 가용자금을 나누는 업무는 Fund에게 남긴다. 배분 기준 금액/기간이 필요한 경우 objective와 View로 전달한다. 서로 모순되는 실제 납입액과 비중은 Fund/검수 단계에서 확인해야 한다.
+
+
 ## 6. Profile / Memory / Scenario 도구
 
 ### 6.1 Profile 연동
 
-`tools/integration.py`와 `tools/ports.py`를 통해 팀원의 `agent.profile.profile_agent.run_profile_agent()`에 연결한다. Supervisor는 신뢰된 실제 State에서 `current_profile`을 구성해 주입하며 LLM이 임의 프로필이나 사용자 ID를 도구 입력으로 만들지 않도록 한다.
+기존 `tools/integration.py`와 `SupervisorPorts`를 통해 팀 Profile 구현을 연결한다. 고도화된 Profile은 Supervisor가 지정한 필드의 조회·정리·검증에 집중한다. Profile 구현을 변경하는 패치가 아니므로 실제 팀 코드에서 아래 계약을 구현해야 한다.
 
-- `operation="inspect"`, `is_temporary=true`, `fields` 목록: 읽기 전용 필드 조회. 별도 `get_profile_fields` Port가 없으면 이미 로드된 값만 사용하고 미로딩 필드를 표시한다.
-- `operation="prepare"`: 사용자 발화의 월소득·목표 등 추출 및 임시 값 또는 저장 후보 준비. `ProfileResult.profile`은 부분 반환값이지 전체 프로필 스냅샷이 아니다.
-- `ProfileResult.missing_info`는 누락 필드, `changes`는 저장 후보이다. 가상 조건은 실제 변경 후보로 반영하지 않는다.
-- 실제 저장 후보는 Finalize에서 승인 대기 상태로 변환한다. DB 저장, 승인 이후 갱신, 계약 스냅샷 발급은 별도 서비스의 책임이다.
+- `operation="inspect"`, `is_temporary=true`, `fields` 목록: 인증된 읽기 전용 `get_profile_fields(fields)` 포트로 확인. 실제 snapshot의 로드된 필드는 재사용하고 조회하지 않은 필드만 한 번에 요청한다. 사용자가 질문한 금융상담 전체를 Profile에 다시 전달하여 의도를 판정하도록 하지 않는다.
+- `operation="prepare"`, `instruction`, `is_temporary`: 사용자 발화에 포함된 값/가정/변경 후보만 추출. 서버가 실제 `current_profile`을 주입한다. 추출 delta는 DB 사실이 아니며 읽기 전용 포트가 확인한 값만 실제 snapshot을 보완한다.
+- `get_profile_fields`는 기존 nested profile dict를 반환해도 된다. 고도화된 구현은 아래와 같은 `ProfileResult` envelope를 반환하면 된다. 실제 인증 범위와 snapshot은 서버가 고정한다.
 
-현재 Profile MVP는 제한된 자연어 규칙을 이용한 월소득 추출, 비상금 목표 추가, 일부 누락 정보 검사까지 지원한다. 임의 금융정보를 실제 DB에서 읽거나 영속 저장하는 기능은 v12 자체 실행에서 제공하지 않는다.
+```json
+{
+  "profile": {
+    "financial_profile": {
+      "monthly_net_income_krw": 3000000,
+      "monthly_debt_payment_krw": 0
+    }
+  },
+  "missing_info": ["financial_profile.monthly_living_expenses_krw"],
+  "field_status": {
+    "financial_profile.monthly_net_income_krw": "available",
+    "financial_profile.monthly_debt_payment_krw": "available",
+    "financial_profile.monthly_living_expenses_krw": "missing"
+  }
+}
+```
+
+| field_status | 의미 |
+|---|---|
+| `available` | 실제 값 존재(읽기 결과는 null 불가; 0/false/빈 목록 허용) |
+| `missing` | 확인했으나 값 미등록/미확인(null) |
+| `ambiguous` / `conflict` / `invalid` | 값의 의미 모호/충돌/형식 또는 범위 오류. 확정값이나 변경 후보로 사용 금지 |
+| `not_loaded` | 조회되지 않았거나 응답에서 생략(미등록으로 단정하지 않음) |
+| `unavailable` / `failed` / `access_denied` | 조회 불가/실패/권한 거부 |
+
+기존 짧은 필드명과 `unknown`(또는 `not_registered`)은 정규 경로 및 `missing`으로 호환 정규화한다. `missing_info`는 `missing` 상태만 제공하고 그 외 상태는 `field_status`로 구분한다. 상태와 값이 모순되면 계약 오류로 반려한다. `ambiguous/conflict/invalid`에는 확정값을 넣지 않고 null 또는 생략한다. 성공한 읽기 포트의 요청 범위에 해당하는 확인된 값만 원본 State의 읽기 스냅샷을 보완한다. 임의 변경/저장하지 않는다. 실제 계약 참조는 인증된 baseline/holding 조회로만 검증한다. 읽기 Port가 없다면 로드된 값만 반환하고 나머지는 `not_loaded`로 처리한다. 같은 Supervisor 실행 내에 확인한 값과 조회 실패는 재호출하지 않는다.
+
+기존 서비스 바인딩 예시:
+
+```python
+# server_profile_read: 위 계약을 만족하는 인증된 read 함수
+ports = bind_mvp_ports(
+    memory_service=memory_service,
+    authenticated_user_id=authenticated_user_id,
+    get_profile_fields=server_profile_read,
+)
+# 고도화된 Profile prepare 구현은 필요 시 SupervisorPorts.profile_agent에 직접 주입.
+```
+
+Profile MVP는 일부 월소득/비상금 표현 처리 및 일부 누락 검사만 수행한다. 이 패치는 고도화된 ProfileResult 및 필드 조회 포트의 계약을 지원하지만 현재 팀 코드의 추출 범위를 고치지는 않는다. `changes`는 승인 후보로 보관하고 실제 저장은 별도 승인/저장 서비스에서 처리한다. 사용자 질문 문구 생성과 필수성 판단은 Supervisor 책임이다.
 
 ### 6.2 Memory 연동
 
@@ -586,7 +762,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 `--regression`은 실제 모델의 판단 정답을 재생하는 테스트가 아니다. HTTP 전송 경계, DAG, 내부 State 격리, Memory 계약·권한·재사용과 실제 팀 MVP 연결을 검사한다. 기존 `--case`, `--all`, `--simulate-dispatch` 방식의 고정 테스트는 v12에서 제거되었다.
 
-이 버전의 오프라인 계약 검사는 기존 19개와 신규 6개를 합쳐 25개이다(22개 통과, 환경 의존 선택 검사 3개 미실행). 추가 검사에서는 누락 ID 자동 생성/명시 ID 보존, 중복·잘못된 ID 반려, 누락 ID 요청 후 불필요한 재호출 없는 독립 Product/Fund 계획, 공통 조회 사용 범위, 공통 Fund 금지를 확인한다. 기존 HTTP 및 Memory 계약 검사 외에 필수 intent, 동일/상이한 분기 DAG와 공통 작업, 미배정 분기 및 교차 의존 거부, 가상 납입 조건 검증, 반려 후 재제출 및 내부 State 격리, 선택적 부모 LangGraph `Command` 이동을 검사한다. 신규 검사는 동시 제출 한 번의 API 전송 계약, ID 자동 생성·오류 복구, 미확인 계약 참조 차단, 추가 Memory 조회 왕복 유지, Context 경량화와 권한 거부, 상세 기억 중복 제거를 포함한다. 단위 검사용 제어된 결정과 HTTP 응답은 실제 기본 실행에 사용하지 않는다. 제작 환경에서 실제 API 키 없이 모델의 판단 정확도는 검증할 수 없다. 팀원 모듈·LangGraph 설치 여부에 따라 선택 검사 결과가 달라진다. 최종 제작 검증 결과는 ZIP의 README에 기록했다.
+v16의 37개 계약 검사에 v17 확인 질문/조회 상태/재개 검사 13개를 추가했다. 총 50개(47개 통과, 환경 의존 검사 3개 미실행). 기존 HTTP/분기/DAG/Memory/실제 계약 참조 검증을 유지하며 신규 검사는 분기 수별 슬롯, 다중/공통 작업 슬롯 차감, LLM 상한 무시 및 변조 거부, Dispatcher/Collector 숫자 전달·초과 반려, 후보 비교 분기 제한, B안 복원·재분기, 미확인 상담/계약 차단, 비중 검증, 이전 상한 변경 시 revision 갱신을 확인한다. 실제 API 또는 전문 Agent/상담 저장소의 운영 연결 검사는 포함하지 않는다.
 
 실제 모델 평가에는 `--question`, 필요시 `--state-file`을 사용한다. 결과를 아래 기준으로 검토한다.
 
@@ -607,7 +783,7 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 프롬프트는 의미 판단 규칙, 스키마는 형식, Python은 구조 및 안전 검증, 개발 문서는 상세 설계·예시로 책임을 나눈다. 모든 전문 Agent의 업무 절차나 긴 objective 예시를 시스템 프롬프트로 다시 옮기지 않는다. 실제 판단 품질은 간소화 전후 같은 질문·State·모델을 사용해 비교한다. 명시 저장, 가상값 격리, 시나리오 coverage, 필수 조회, 동일한 비교 기준이 누락되지 않는지를 함께 검토한다.
 
-동일한 2분기 적금 비교 제어 입력으로 검사한 결과는 다음과 같다. 모델은 호출하지 않았다.
+v15 최적화 당시 동일한 2분기 적금 비교 제어 입력으로 검사한 참고 결과는 다음과 같다. v17의 시스템 프롬프트 파일 UTF-8 크기는 v16 8,668 B → v17 8,158 B이다. 실제 API 토큰이나 비용은 별도 측정해야 한다. 모델은 호출하지 않았다.
 
 | 측정 항목 | v14 | v15 |
 |---|---:|---:|
@@ -621,10 +797,13 @@ uv run python agent/supervisor/supervisor_main.py --regression
 
 ### 9.4 현재 범위 및 후속 과제
 
-| 항목 | v15 기준 상태 |
+| 항목 | v17 기준 상태 |
 |---|---|
 | Supervisor 내부 LangGraph, API 호출 코드 및 전체 DAG 반환 | 구현 |
 | 시나리오별 독립 DAG, 공통 작업 예외 및 필수 intent 검증 | 구현 (실제 모델 판단 검증 필요) |
+| 의도/필수 정보 판단, 지정 필드 상태, 확인 질문 및 답변 연결 계약 | 구현, 실제 모델/고도화된 Profile/Entry Router 연동 필요 |
+| 후보 슬롯 Python 배정 및 수집 검증 함수 | 구현, 상위 실행 노드 연결 필요 |
+| 이전 상담 선택·비중 재분기 | 구현, 인증된 상담 스냅샷 조회/저장 서비스 연결 필요 |
 | 분기별 결과 정렬·차이 계산·최종 비교 | 상위 비교 준비/Final Advice 범위, 미구현 |
 | 실제 Profile / Memory MVP 연결 인터페이스 | 구현, 팀원 모듈 설치·서비스 연결 필요 |
 | 영속 Profile / Memory DB, 승인 저장, 실제 계약 스냅샷 | 팀 서비스와 별도 연동 필요. main의 Memory PostgreSQL 구현은 변경하지 않으며 CLI는 기존 로컬 MVP를 사용 |

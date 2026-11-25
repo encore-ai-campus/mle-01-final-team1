@@ -8,9 +8,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..contracts import SupervisorContractError
-from .profile_fields import normalize_profile, validate_read_fields
+from .profile_fields import normalize_profile, validate_read_fields, canonical_profile_path
 
 ToolFn = Callable[[dict[str, Any]], dict[str, Any]]
+
+# 누락과 모호/충돌/서비스 오류를 구별한다. 레거시 unknown은 값 미확인으로 해석한다.
+PROFILE_FIELD_STATUSES = frozenset({"available", "missing", "ambiguous", "conflict", "invalid",
+                                    "not_loaded", "unavailable", "failed", "access_denied"})
+
+
+def normalize_field_status(value: Any) -> str:
+    if not isinstance(value, str):
+        raise SupervisorContractError("Profile field_status must be a string")
+    status = {"unknown": "missing", "not_registered": "missing"}.get(value, value)
+    if status not in PROFILE_FIELD_STATUSES:
+        raise SupervisorContractError("Unknown Profile field_status")
+    return status
 
 
 def validate_profile_request(data: dict[str, Any]) -> None:
@@ -39,7 +52,8 @@ def normalize_profile_result(data: Any) -> dict[str, Any]:
     missing = data.get("missing_info")
     if not isinstance(missing, list) or not all(isinstance(x, str) for x in missing):
         raise SupervisorContractError("ProfileResult.missing_info는 문자열 목록이어야 합니다.")
-    result = {"profile": normalize_profile(data["profile"]), "missing_info": list(dict.fromkeys(missing))}
+    missing = list(dict.fromkeys(canonical_profile_path(f) for f in missing))
+    result = {"profile": normalize_profile(data["profile"]), "missing_info": missing}
     if "changes" in data:
         if not isinstance(data["changes"], list) or any(not isinstance(c, dict) for c in data["changes"]):
             raise SupervisorContractError("ProfileResult.changes는 dict 목록이어야 합니다.")
@@ -48,10 +62,32 @@ def normalize_profile_result(data: Any) -> dict[str, Any]:
         if not isinstance(data["baseline_ref"], str) or not data["baseline_ref"]:
             raise SupervisorContractError("ProfileResult.baseline_ref가 올바르지 않습니다.")
         result["baseline_ref"] = data["baseline_ref"]
+    statuses: dict[str, str] = {}
     if "field_status" in data:
         if not isinstance(data["field_status"], dict):
             raise SupervisorContractError("ProfileResult.field_status는 dict이어야 합니다.")
-        result["field_status"] = data["field_status"]
+        for field, raw_status in data["field_status"].items():
+            path = canonical_profile_path(field)
+            status = normalize_field_status(raw_status)
+            if path in statuses and statuses[path] != status:
+                raise SupervisorContractError("Conflicting Profile field_status aliases")
+            statuses[path] = status
+    for path in missing:
+        if statuses.get(path) == "available":
+            raise SupervisorContractError("Profile cannot mark a missing field available")
+        statuses.setdefault(path, "missing")
+    for path, status in statuses.items():
+        domain, field = path.split(".")
+        value = result["profile"].get(domain, {}).get(field)
+        if status != "available" and value is not None:
+            raise SupervisorContractError("Unresolved Profile field must not carry a confirmed value")
+        if status in {"ambiguous", "conflict", "invalid"} and any(
+                ch.get("domain") == domain.removesuffix("_profile") and ch.get("field") == field
+                for ch in result.get("changes", [])):
+            raise SupervisorContractError("Unresolved Profile field cannot be a save proposal")
+    if statuses:
+        result["field_status"] = statuses
+        result["missing_info"] = [path for path, status in statuses.items() if status == "missing"]
     if "branch_specs" in data:
         specs = data["branch_specs"]
         if not isinstance(specs, list) or any(not isinstance(spec, dict) or not isinstance(spec.get("id"), str) or spec.get("status") not in {"ready", "conditional"} or not isinstance(spec.get("holding_actions", []), list) for spec in specs):
@@ -140,10 +176,12 @@ class SupervisorPorts:
     retrieve_memory: ToolFn | None = None
     get_profile_fields: Callable[[list[str]], dict[str, Any]] | None = None
     load_memory_context: ToolFn | None = None
+    load_advice_snapshot: Callable[[str], dict[str, Any]] | None = None
 
     @classmethod
     def with_profile_mvp(cls, *, retrieve_memory: ToolFn | None = None,
                          load_memory_context: ToolFn | None = None,
+                         load_advice_snapshot: Callable[[str], dict[str, Any]] | None = None,
                          get_profile_fields: Callable[[list[str]], dict[str, Any]] | None = None) -> "SupervisorPorts":
         from agent.profile.profile_agent import run_profile_agent
 
@@ -156,4 +194,5 @@ class SupervisorPorts:
             })
 
         return cls(profile_agent=profile_adapter, retrieve_memory=retrieve_memory,
-                   load_memory_context=load_memory_context, get_profile_fields=get_profile_fields)
+                   load_memory_context=load_memory_context, get_profile_fields=get_profile_fields,
+                   load_advice_snapshot=load_advice_snapshot)
