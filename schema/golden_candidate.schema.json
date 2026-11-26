@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Finance GraphRAG Golden Candidate",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "question",
+    "reference",
+    "expected_facts",
+    "reference_context_ids",
+    "expected_entity_ids",
+    "expected_relation_ids",
+    "expected_route",
+    "route_rationale",
+    "difficulty",
+    "hop_count",
+    "source_snapshot_version",
+    "source_evidence_ids",
+    "generator",
+    "critic",
+    "review_status"
+  ],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "question": {"type": "string", "minLength": 1},
+    "reference": {"type": "string", "minLength": 1},
+    "expected_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fact", "value"],
+        "properties": {
+          "fact": {"type": "string"},
+          "value": {},
+          "unit": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "reference_context_ids": {"type": "array", "items": {"type": "string"}},
+    "expected_entity_ids": {"type": "array", "items": {"type": "string"}},
+    "expected_relation_ids": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from_id", "relation_type", "to_id"],
+        "properties": {
+          "from_label": {"type": "string"},
+          "from_id": {"type": "string"},
+          "relation_type": {"type": "string"},
+          "to_label": {"type": "string"},
+          "to_id": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "expected_route": {"enum": ["VECTOR", "GRAPH", "HYBRID"]},
+    "route_rationale": {"type": "string", "minLength": 1},
+    "difficulty": {"enum": ["easy", "medium", "hard"]},
+    "hop_count": {"type": "integer", "minimum": 0},
+    "source_snapshot_version": {"type": "string", "minLength": 1},
+    "source_evidence_ids": {"type": "array", "items": {"type": "string"}},
+    "neo4j_evidence_ids": {"type": "array", "items": {"type": "string"}},
+    "relation_identity_basis": {"const": "from_id+relation_type+to_id"},
+    "generator": {"type": "object"},
+    "critic": {"type": "object"},
+    "review_status": {"enum": ["pending", "approved", "revised", "rejected", "on_hold"]}
+  },
+  "additionalProperties": true
+}
