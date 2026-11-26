@@ -15,3 +15,4 @@ Scenario,service,scenario_id,저장하지 않는 가정·시뮬레이션,scenari
 ProductDisclosure,external_data,disclosure_id,금융상품의 공시 버전,product_id와 disclosure_month 조합으로 생성
 ProductType,reference_data,product_type_code,상품 유형 분류,savings·deposit·loan 분류 기준
 Benefit,external_data,benefit_id,정책이 제공하는 금액과 지원 방식,지원내용·지원규모 원문에서 구조화
+Evidence,provenance,evidence_id,원천 데이터의 특정 필드 또는 문서 구간이 답변 값을 뒷받침하는 근거,API 필드형 데이터는 원본 레코드·필드·값을 보존하고 문서형 근거는 원문 구간을 보존
