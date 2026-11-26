@@ -12,6 +12,9 @@ FinancialProduct,OFFERED_BY,Institution,N:1,external_data,금융기관과 상품
 YouthPolicy,OPERATED_BY,Institution,N:1,external_data,정책 운영기관 연결,운영기관 코드 기준
 YouthPolicy,APPLIES_TO,Region,N:M,external_data,정책 적용 지역 연결,region_code 배열을 관계로 변환 가능
 YouthPolicy,HAS_BENEFIT,Benefit,1:N,external_data,정책이 제공하는 지원금액·방식 연결,지원 원문에서 확인된 경우만 연결
+RateOption,SUPPORTED_BY,Evidence,1:N,provenance,금리옵션의 특정 속성을 뒷받침하는 원천 근거 연결,근거의 supports_property로 금리옵션 속성과 연결
+YouthPolicy,SUPPORTED_BY,Evidence,1:N,provenance,정책의 특정 필드값·조건을 뒷받침하는 원천 근거 연결,근거의 supports_property로 정책 속성과 연결
+Benefit,SUPPORTED_BY,Evidence,1:N,provenance,지원 혜택의 특정 속성을 뒷받침하는 원천 근거 연결,근거의 supports_property로 혜택 속성과 연결
 User,MAY_BE_ELIGIBLE_FOR,YouthPolicy,N:M,runtime,사용자별 정책 자격 후보,고정 상품 속성이 아닌 실행 결과
 Goal,RECOMMENDS,FinancialProduct,N:M,runtime,목표에 맞는 상품 추천,상담 실행 결과로 생성
 Goal,SUPPORTED_BY,YouthPolicy,N:M,runtime,목표와 정책 혜택 연결,근거와 조건을 함께 저장
