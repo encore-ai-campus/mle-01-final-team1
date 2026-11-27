@@ -30,3 +30,7 @@ Thumbs.db
 
 # Ignore local SQLite databases
 *.db
+
+# 임베딩 생성 결과 및 캐시
+data/processed/youth_policy_embedded*.json
+data/processed/youth_policy_embeddings.db*
