@@ -16,6 +16,7 @@ dependencies = [
     "pwdlib[argon2]>=0.4.2",
     "sqlalchemy>=2.1.9",
     "email-validator>=2.4.0",
+    "openai>=3.60.0",
 ]
 
 [tool.uv]
